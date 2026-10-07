@@ -1,7 +1,8 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
-export type IconName = 'memory' | 'search' | 'refresh' | 'chevron' | 'history' | 'settings' | 'close' | 'back' | 'arrow' | 'mic' | 'command' | 'harness';
+export type IconName = 'document' | 'memory' | 'search' | 'refresh' | 'chevron' | 'history' | 'settings' | 'close' | 'back' | 'arrow' | 'mic' | 'command' | 'harness';
 const paths: Record<IconName, ReactNode> = {
+  document: <><path d="M6 3h8l4 4v14H6ZM14 3v5h4M9 12h6M9 16h6" /></>,
   memory: <><path d="M4 4h7a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4ZM20 4h-3a3 3 0 0 0-3 3M14 21a4 4 0 0 1 4-2h2V4" /></>,
   search: <><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4 4" /></>,
   refresh: <><path d="M19 8a7 7 0 0 0-12.2-1.8L5 8M5 4v4h4M5 16a7 7 0 0 0 12.2 1.8L19 16M19 20v-4h-4" /></>,

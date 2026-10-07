@@ -1,6 +1,9 @@
 //! Local speech worker using Parakeet TDT through sherpa-onnx.
 
 use crate::audio::{AudioSource, CaptureSession};
+use sherpa_onnx::{
+    OfflineModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig,
+};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
@@ -10,9 +13,6 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use webrtc_vad::{SampleRate, Vad, VadMode};
-use sherpa_onnx::{
-    OfflineModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig,
-};
 
 pub const FRAME_SAMPLES: usize = 320;
 pub const MAX_OUTPUTS: usize = 32;
@@ -473,7 +473,10 @@ pub fn decode(context: &OfflineRecognizer, samples: &[f32]) -> Result<String, St
     let stream = context.create_stream();
     stream.accept_waveform(16000, samples);
     context.decode(&stream);
-    let text = stream.get_result().map(|result| result.text).unwrap_or_default();
+    let text = stream
+        .get_result()
+        .map(|result| result.text)
+        .unwrap_or_default();
     if text.len() > 64 * 1024 {
         return Err("Speech output exceeded its bound".into());
     }

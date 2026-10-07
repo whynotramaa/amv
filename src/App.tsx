@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react';
-import { askMeeting, cancelResponse, desktop, defaults, getMeetingState, getResponseState, restoreSavedMeeting, openMemory, hideOverlay, loadState, sendMeetingSpeech, saveSettings, startChat, startDragging, startMeeting, stopMeeting, type AppState, type MeetingState, type ResponseState, type Settings } from './bridge';
+import { askMeeting, cancelResponse, desktop, defaults, getMeetingState, getResponseState, restoreSavedMeeting, openMemory, openDocuments, hideOverlay, loadState, sendMeetingSpeech, saveSettings, startChat, startDragging, startMeeting, stopMeeting, type AppState, type MeetingState, type ResponseState, type Settings } from './bridge';
 import { Button, Icon, IconButton } from './components/primitives';
 import Connections from './components/Connections';
 import MeetingHistory from './components/MeetingHistory';
@@ -24,6 +24,11 @@ export default function App() {
   const [meeting, setMeeting] = useState<MeetingState>(idleMeeting);
   const [meetingBusy, setMeetingBusy] = useState(false);
   const [question, setQuestion] = useState('');
+  const [meetingSetup, setMeetingSetup] = useState(false);
+  const [meetingTitle, setMeetingTitle] = useState('');
+  const [captureConsent, setCaptureConsent] = useState(false);
+  const [remoteConsent, setRemoteConsent] = useState(false);
+  const [includeMicrophone, setIncludeMicrophone] = useState(false);
   const [response, setResponse] = useState<ResponseState | null>(null);
   const [opacity, setOpacity] = useState(savedOpacity);
   const meetingVersion = useRef(0);
@@ -39,7 +44,7 @@ export default function App() {
   const retainedMeetingId = Number.isInteger(meeting.meetingId) && meeting.meetingId != null ? meeting.meetingId : null;
   const canAsk = desktop && state.inferenceAvailable && !responseBusy && !commandBusy;
   const commitMeeting = (next: MeetingState) => {
-    if (next.meetingId !== meetingRef.current.meetingId) { responseGeneration.current++; responseRequestId.current = 0; responseRef.current = null; setResponse(null); }
+    if (next.meetingId !== meetingRef.current.meetingId) { setQuestion(''); setIncludeMicrophone(false); responseGeneration.current++; responseRequestId.current = 0; responseRef.current = null; setResponse(null); }
     meetingRef.current = next;
     setMeeting(next);
   };
@@ -64,6 +69,7 @@ export default function App() {
       .finally(() => { if (!cancelled) setLoading(false); });
     const listeners = desktop ? [
       listen<string>('app-notice', event => { if (!cancelled) setNotice({ text: event.payload }); }),
+      listen('connections-changed', () => { if (!cancelled) void loadState().then(setState).catch(() => {}); }),
       listen<MeetingState>('meeting-state', event => { if (cancelled) return; meetingVersion.current++; commitMeeting(event.payload); if (event.payload.status === 'error') setNotice({ text: event.payload.error || 'Audio capture failed.', error: true }); }),
       listen<ResponseState>('response-state', event => { if (cancelled) return; acceptResponse(event.payload, responseGeneration.current, event.payload.meetingId); }),
     ] : [];
@@ -99,11 +105,24 @@ export default function App() {
     if (event.button === 0 && !(event.target as HTMLElement).closest('button, select, input, textarea, a')) void startDragging().catch(() => {});
   }
   async function toggleListening() {
+    if (!listening) { setCaptureConsent(false); setRemoteConsent(false); setMeetingSetup(true); return; }
     setMeetingBusy(true); setNotice(null);
     const version = meetingVersion.current;
     try {
-      const next = listening ? await stopMeeting() : await startMeeting(`Meeting ${new Date().toLocaleString()}`, true, null, state.settings.sendMode === 'automatic');
+      const next = await stopMeeting();
       if (version === meetingVersion.current) commitMeeting(next);
+    } catch (error) { setNotice({ text: String(error), error: true }); }
+    finally { setMeetingBusy(false); }
+  }
+  async function beginMeeting(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!captureConsent || !meetingTitle.trim() || meetingBusy) return;
+    setMeetingBusy(true); setNotice(null);
+    const version = meetingVersion.current;
+    try {
+      const next = await startMeeting(meetingTitle.trim(), captureConsent, null, remoteConsent);
+      if (version === meetingVersion.current) commitMeeting(next);
+      setMeetingSetup(false); setCaptureConsent(false); setRemoteConsent(false);
     } catch (error) { setNotice({ text: String(error), error: true }); }
     finally { setMeetingBusy(false); }
   }
@@ -125,13 +144,18 @@ export default function App() {
     if (new TextEncoder().encode(text).length > 64 * 1024) { setNotice({ text: 'Messages must be 64 KiB or smaller.', error: true }); return; }
     commandPending.current = true; setCommandBusy(true);
     setNotice(null); setQuestion('');
+    let generation = responseGeneration.current;
+    let meetingId = retainedMeetingId;
+    const version = meetingVersion.current;
     try {
-      let meetingId = retainedMeetingId;
-      if (meetingId === null) { const next = await startChat(); commitMeeting(next); meetingId = next.meetingId; }
+      if (meetingId === null) {
+        const next = await startChat();
+        if (version !== meetingVersion.current && next.meetingId !== meetingRef.current.meetingId) return;
+        commitMeeting(next); meetingId = next.meetingId; generation = responseGeneration.current;
+      }
       if (meetingId === null) throw new Error('Chat could not start.');
-      const generation = responseGeneration.current;
-      acceptResponse(await askMeeting(meetingId, text, false), generation, meetingId);
-    } catch (error) { setQuestion(old => old || text); setNotice({ text: String(error), error: true }); }
+      acceptResponse(await askMeeting(meetingId, text, includeMicrophone), generation, meetingId);
+    } catch (error) { if (generation === responseGeneration.current && meetingId === meetingRef.current.meetingId) { setQuestion(old => old || text); setNotice({ text: String(error), error: true }); } }
     finally { commandPending.current = false; setCommandBusy(false); }
   }
   async function sendSpeech() {
@@ -168,12 +192,21 @@ export default function App() {
 
       <div className="view">
         {view === 'history' ? <MeetingHistory onOpenAssistant={openSavedMeeting} /> : view === 'connections' ? <Connections onChanged={() => void loadState().then(setState).catch(() => {})} /> : view === 'assistant' ? <>
+          {meetingSetup && <form className="settings-form" onSubmit={beginMeeting} aria-label="Prepare a meeting">
+            <div className="field"><label htmlFor="meeting-title">Meeting title</label><input id="meeting-title" className="input" value={meetingTitle} maxLength={200} onChange={event => setMeetingTitle(event.target.value)} disabled={meetingBusy} required /></div>
+            <label className="checkbox"><input type="checkbox" checked={captureConsent} onChange={event => setCaptureConsent(event.target.checked)} disabled={meetingBusy} />I have permission to capture audio for this meeting.</label>
+            {state.settings.sendMode === 'automatic' && <label className="checkbox"><input type="checkbox" checked={remoteConsent} onChange={event => setRemoteConsent(event.target.checked)} disabled={meetingBusy} />Allow automatic sending of new system speech during this meeting</label>}
+            <p className="help">Capture is local. Remote answers use new system speech and message history. Automatic sending requires permission for each meeting.</p>
+            <div className="form-actions"><Button quiet disabled={meetingBusy} onClick={() => setMeetingSetup(false)}>Cancel meeting setup</Button><Button primary type="submit" disabled={meetingBusy || !captureConsent || !meetingTitle.trim()}>Start local meeting</Button></div>
+          </form>}
+          {retainedMeetingId !== null && <details className="meeting-context"><summary>{meeting.title || 'Meeting context'}{listening ? ' · Listening' : ' · Saved locally'}</summary><div className="transcript" aria-label="Finalized transcript">{meeting.transcript.map(segment => <p key={segment.id}><span className="help">{segment.source === 'system' ? 'SYSTEM' : 'MIC'} </span>{segment.text}</p>)}</div></details>}
           {response && <Suspense fallback={null}><ResponseView response={response} onRetry={response.status === 'error' || response.status === 'cancelled' ? sendSpeech : undefined} /></Suspense>}
           {notice && <p className={`notice${notice.error ? ' error' : ''}`} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
         </> : <form className="settings-form" onSubmit={submit}>
           <div className="settings-links">
-            <Button quiet onClick={() => { setView('connections'); setNotice(null); }}>{state.inferenceAvailable ? 'ChatGPT connected' : 'Connect ChatGPT'}</Button>
+            <Button quiet onClick={() => { setView('connections'); setNotice(null); }}>{state.inferenceAvailable ? 'ChatGPT connected' : state.chatgptConnected ? 'Pick a model' : 'Connect ChatGPT'}</Button>
             <Button quiet onClick={() => { setView('history'); setNotice(null); }}>Saved meetings</Button>
+            <Button quiet onClick={() => void openDocuments().catch(error => setNotice({ text: String(error), error: true }))}>Documents</Button>
             <Button quiet onClick={() => void openMemory().catch(error => setNotice({ text: String(error), error: true }))}>Memory</Button>
           </div>
           <div className="field"><label htmlFor="opacity">Background opacity {Math.round(opacity * 100)}%</label><input id="opacity" type="range" min={15} max={100} value={Math.round(opacity * 100)} onChange={event => setOpacity(clampOpacity(Number(event.target.value) / 100))} /><small>Ctrl+Alt+[ and Ctrl+Alt+] adjust it. Ctrl+Alt+0 resets it.</small></div>
@@ -197,16 +230,18 @@ export default function App() {
 
       {view === 'assistant' && <div className="composer">
         <div className="composer-input">
-          <textarea aria-label="Message" placeholder={!desktop ? 'Available in the Windows app' : state.inferenceAvailable ? 'Ask anything' : 'Connect ChatGPT in settings first'} value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={onQuestionKeyDown} disabled={!canAsk} rows={1} />
+          <textarea aria-label="Message" placeholder={!desktop ? 'Available in the Windows app' : state.inferenceAvailable ? 'Ask anything' : state.chatgptConnected ? 'Pick a ChatGPT model in settings first' : 'Connect ChatGPT in settings first'} value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={onQuestionKeyDown} disabled={!canAsk} rows={1} />
           <IconButton icon="arrow" label="Send" onClick={() => void askQuestion()} disabled={!canAsk || !question.trim()} />
         </div>
+        {retainedMeetingId !== null && <p className="help">Output mode changes apply to the next meeting or new chat.</p>}
+        {retainedMeetingId !== null && <label className="checkbox"><input type="checkbox" checked={includeMicrophone} onChange={event => setIncludeMicrophone(event.target.checked)} disabled={!canAsk} />Include microphone context</label>}
         <div className="composer-bar">
-          <select className="mode-select" aria-label="Output mode" value={state.settings.responseMode} onChange={event => void changeMode(event.target.value as Settings['responseMode'])} disabled={loading}>
+          <select className="mode-select" aria-label="Output mode for next meeting" title="Applies to the next meeting or new chat" value={state.settings.responseMode} onChange={event => void changeMode(event.target.value as Settings['responseMode'])} disabled={loading}>
             <option value="suggested_answers">Suggested answers</option><option value="summary">Summary</option><option value="custom">Custom</option>
           </select>
           <div className="composer-actions">
             {responseBusy && <Button quiet onClick={() => void cancelResponse().catch(error => setNotice({ text: String(error), error: true }))}>Stop</Button>}
-            {listening && <Button quiet onClick={() => void sendSpeech()} disabled={!state.inferenceAvailable || responseBusy || commandBusy}>Send speech</Button>}
+            {retainedMeetingId !== null && <Button quiet onClick={() => void sendSpeech()} disabled={!state.inferenceAvailable || responseBusy || commandBusy}>Send speech</Button>}
             <button type="button" className={`icon-button mic${listening ? ' on' : ''}`} aria-label={listening ? 'Stop listening' : 'Start listening'} aria-pressed={listening} title={listening ? 'Stop listening' : 'Start listening'} onClick={() => void toggleListening()} disabled={!desktop || meetingBusy || meeting.status === 'starting' || meeting.status === 'stopping'}>
               <Icon name="mic" />
             </button>

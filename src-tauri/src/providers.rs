@@ -21,6 +21,7 @@ impl ApiProvider {
 
 pub fn http_client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
+        .user_agent("codex_cli_rs/0.160.1")
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(90))

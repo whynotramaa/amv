@@ -210,3 +210,12 @@ The response fixture checks 520×600 and 420×360 layouts, consent, attempt orde
 An original book icon and tray item open a dedicated normal-size management window. The window reuses Poppins, existing spacing/controls, neutral surfaces and thin borders. A narrow library column and wider editor share deliberate edges; below 700 px they stack. Rows show category/project and local-only or enabled status. They replace previous pages rather than accumulating.
 
 The editor uses labeled title/category/project/text controls, manual-source dates, explicit default-off answer permission, quiet deletion and a restrained save action. Inline confirmations protect unsaved selections and closing. Failed saves/deletes retain the draft. Search runs only on submit. This surface does not start capture or a model request. Closing releases its WebView after any required draft confirmation. Native Windows lifecycle, content protection and RAM acceptance remain pending; memory fixture screenshots use mocked IPC.
+
+
+## Documents management
+
+Documents opens a separate 900×700 window (minimum 640×480), sharing the existing spacing, typography, surface, border, radius and control tokens. A restrained import disclosure precedes the library and source details. Local search excerpts use plain text with expandable provenance; no source markup or remote images execute. The narrow layout stacks the library and detail sections. Original document icons follow the existing stroke family. No shadows, serif fonts or Sparkles are introduced.
+
+Source reference is the default and answer permission starts off. Changed/missing source status, explicit reindexing, failure preservation and destructive confirmation explain the actual persistence behavior. Close waits during a change; native close destroys this management WebView. Mocked UI and source checks do not establish native dialog/rendering or inference acceptance.
+
+The compact assistant preserves the newer chat composer and opacity control. Starting capture opens a restrained permissioned meeting form; finalized MIC/SYSTEM context is collapsible. Microphone question inclusion remains explicit. Send speech remains available for retained meetings, and output-mode copy states that preference changes apply to the next meeting or new chat.

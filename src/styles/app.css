@@ -167,3 +167,7 @@ textarea.input { resize: vertical; min-height: 104px; }
 .code-keyword { color: var(--accent); }
 
 .memory-window { height: 100vh; overflow-y: auto; background: var(--surface); padding: var(--space-6); }
+
+.meeting-context > summary { cursor: pointer; min-height: var(--control-compact); color: var(--text-secondary); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
+.meeting-context[open] > summary { margin-bottom: var(--space-3); }
+.meeting-context .transcript p { overflow-wrap: anywhere; font-size: var(--font-size-sm); }

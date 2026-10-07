@@ -298,26 +298,26 @@
 - [ ] `B-6e00017941e4` · PLAN lines 1045–1045: edit user-created memory; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-a73889766f0e` · PLAN lines 1046–1046: delete memory; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-317f25c388ec` · PLAN lines 1047–1047: inspect projects/entities; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-9efe7361f5e5` · PLAN lines 1048–1048: import supported documents; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
+- [ ] `B-9efe7361f5e5` · PLAN lines 1048–1048: import supported documents; Evidence: PARTIAL: bounded TXT/MD/JSON, native picker/copy policy, FTS/provenance/UI and opt-in lexical retrieval implemented; PDF/DOCX/embeddings/native acceptance pending.
 - [ ] `B-0708b52f8baa` · PLAN lines 1049–1049: delete meeting history. Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 
 ## 12. Document ingestion
 
-- [ ] `B-a8e865370d85` · PLAN lines 1063–1063: `.md` Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-d4e7a677d0e1` · PLAN lines 1064–1064: `.txt` Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-86f709d5f6a7` · PLAN lines 1065–1065: `.json` where text extraction is meaningful Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
+- [x] `B-a8e865370d85` · PLAN lines 1063–1063: `.md` Evidence: IMPLEMENTED extraction: documents.rs bounded UTF-8/normalization/JSON leaf tests; native picker/runtime acceptance remains unverified.
+- [x] `B-d4e7a677d0e1` · PLAN lines 1064–1064: `.txt` Evidence: IMPLEMENTED extraction: documents.rs bounded UTF-8/normalization/JSON leaf tests; native picker/runtime acceptance remains unverified.
+- [x] `B-86f709d5f6a7` · PLAN lines 1065–1065: `.json` where text extraction is meaningful Evidence: IMPLEMENTED extraction: documents.rs bounded UTF-8/normalization/JSON leaf tests; native picker/runtime acceptance remains unverified.
 - [ ] `B-b593b3676f94` · PLAN lines 1066–1066: `.pdf` if a reliable local text extraction library is bundled Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-d2cf26eaa242` · PLAN lines 1067–1067: optionally `.docx` after the core path is stable Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-d1c715bb855b` · PLAN lines 1095–1095: original path; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-45afc76fbe0a` · PLAN lines 1096–1096: content hash; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-8614bc78edfe` · PLAN lines 1097–1097: modified time; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-d2f615ec6a25` · PLAN lines 1098–1098: extracted text/chunks; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-c63575933193` · PLAN lines 1099–1099: indexing version. Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
+- [x] `B-d1c715bb855b` · PLAN lines 1095–1095: original path; Evidence: IMPLEMENTED local metadata/chunks: schema8, Store::upsert_document and upgrade/reindex/persistence regression; native file/runtime acceptance remains unverified.
+- [x] `B-45afc76fbe0a` · PLAN lines 1096–1096: content hash; Evidence: IMPLEMENTED local metadata/chunks: schema8, Store::upsert_document and upgrade/reindex/persistence regression; native file/runtime acceptance remains unverified.
+- [x] `B-8614bc78edfe` · PLAN lines 1097–1097: modified time; Evidence: IMPLEMENTED local metadata/chunks: schema8, Store::upsert_document and upgrade/reindex/persistence regression; native file/runtime acceptance remains unverified.
+- [x] `B-d2f615ec6a25` · PLAN lines 1098–1098: extracted text/chunks; Evidence: IMPLEMENTED local metadata/chunks: schema8, Store::upsert_document and upgrade/reindex/persistence regression; native file/runtime acceptance remains unverified.
+- [x] `B-c63575933193` · PLAN lines 1099–1099: indexing version. Evidence: IMPLEMENTED local metadata/chunks: schema8, Store::upsert_document and upgrade/reindex/persistence regression; native file/runtime acceptance remains unverified.
 
 ## 14. ChatGPT authentication and inference
 
 - [ ] `B-406b4f1f1f8c` · PLAN lines 1193–1193: eligible Plus/Pro users can authorize ChatGPT-plan usage; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-5187688cf4db` · PLAN lines 1194–1194: open-source clients can dynamically register; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
+- [ ] `B-5187688cf4db` · PLAN lines 1194–1194: open-source clients can dynamically register; Evidence: CURRENT GAP: newer auth.rs uses fixed public client ID; agreed dynamic-registration flow and eligibility remain unverified.
 - [ ] `B-34b931d47bcd` · PLAN lines 1195–1195: first registration uses an installation host ID; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-049ca1b3e894` · PLAN lines 1196–1196: no user-supplied API key should be required for the intended path; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-28cead0b2dfd` · PLAN lines 1197–1198: no client secret should be embedded for the open-source dynamic flow; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
@@ -393,7 +393,7 @@
 - [ ] `B-5dcb2dbd1987` · PLAN lines 1727–1727: audio device; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-73f46732fd53` · PLAN lines 1728–1728: STT/model; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-ba00b53ee59a` · PLAN lines 1729–1729: database; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-39e10fe71117` · PLAN lines 1730–1730: document ingestion; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
+- [ ] `B-39e10fe71117` · PLAN lines 1730–1730: document ingestion; Evidence: PARTIAL: bounded TXT/MD/JSON, native picker/copy policy, FTS/provenance/UI and opt-in lexical retrieval implemented; PDF/DOCX/embeddings/native acceptance pending.
 - [ ] `B-5ec91e8fd323` · PLAN lines 1731–1731: authentication; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-5f9b47f03210` · PLAN lines 1732–1732: inference/network; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-ea167576801e` · PLAN lines 1733–1733: shortcut conflict; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
@@ -578,7 +578,7 @@
 
 - [ ] `B-8335eafd482e` · PLAN lines 2174–2174: structured memories; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-694ead31056a` · PLAN lines 2175–2175: project/person entities; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
-- [ ] `B-5e446df0df7e` · PLAN lines 2176–2176: document ingestion; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
+- [ ] `B-5e446df0df7e` · PLAN lines 2176–2176: document ingestion; Evidence: PARTIAL: bounded TXT/MD/JSON, native picker/copy policy, FTS/provenance/UI and opt-in lexical retrieval implemented; PDF/DOCX/embeddings/native acceptance pending.
 - [ ] `B-f322ee1b77a8` · PLAN lines 2177–2177: FTS5; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-790e2a136e52` · PLAN lines 2178–2178: local embeddings; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.
 - [ ] `B-4d4d473ac10e` · PLAN lines 2179–2179: hybrid retrieval; Evidence: pending individual verification; see REQUIREMENTS.md for the section assessment.

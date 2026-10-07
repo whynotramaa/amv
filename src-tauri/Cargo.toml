@@ -1,6 +1,6 @@
 [package]
 name = "harness"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.99"
 description = "Private local-first meeting assistant"
@@ -62,4 +62,6 @@ windows = { version = "0.62", features = [
     "Win32_Security_Cryptography",
     "Win32_System_Memory",
     "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
 ] }

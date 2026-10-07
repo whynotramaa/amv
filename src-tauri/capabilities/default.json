@@ -4,7 +4,8 @@
   "description": "Local assistant and memory management windows. Core logic stays in Rust.",
   "windows": [
     "overlay",
-    "management"
+    "management",
+    "documents"
   ],
   "permissions": [
     "core:default",

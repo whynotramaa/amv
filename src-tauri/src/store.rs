@@ -3,7 +3,9 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::Duration};
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
+const MAX_DOCUMENT_TEXT: usize = 256 * 1024;
+const MAX_DOCUMENT_CHUNK: usize = 4096;
 const MAX_MEMORY_BODY: usize = 16 * 1024;
 const MAX_MEMORY_PAGE: usize = 50;
 const MAX_MEMORY_PAGE_BYTES: usize = 64 * 1024;
@@ -51,6 +53,65 @@ pub struct MemoryInput {
     pub category: String,
     pub project: Option<String>,
     pub enabled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct DocumentInput {
+    pub title: String,
+    pub source_path: String,
+    pub stored_path: Option<String>,
+    pub content_hash: String,
+    pub modified_at: i64,
+    pub indexing_version: u32,
+    pub text: String,
+    pub project: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Document {
+    pub id: i64,
+    pub title: String,
+    pub source_path: String,
+    pub source_policy: String,
+    pub content_hash: String,
+    pub modified_at: i64,
+    pub indexed_at: i64,
+    pub indexing_version: u32,
+    pub project: Option<String>,
+    pub enabled: bool,
+    pub chunk_count: usize,
+    pub text_bytes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentPage {
+    pub documents: Vec<Document>,
+    pub has_more: bool,
+    pub next: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DocumentSource {
+    pub source_path: String,
+    pub stored_path: Option<String>,
+    pub project: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChunk {
+    pub id: i64,
+    pub document_id: i64,
+    pub title: String,
+    pub source_path: String,
+    pub content_hash: String,
+    pub indexing_version: u32,
+    pub chunk_index: usize,
+    pub text: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -367,6 +428,10 @@ impl Store {
             if version < 7 {
                 tx.execute_batch(include_str!("../migrations/007_manual_memory.sql"))
                     .context("migrate manual memory")?;
+            }
+            if version < 8 {
+                tx.execute_batch(include_str!("../migrations/008_documents.sql"))
+                    .context("apply document migration")?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .context("set schema version")?;
@@ -1325,6 +1390,231 @@ impl Store {
         })
     }
 
+    pub fn upsert_document(&self, input: &DocumentInput, now: i64) -> Result<Document> {
+        validate_document_input(input)?;
+        validate_time(now)?;
+        let title = input.title.trim();
+        let project = input
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        // ponytail: fixed UTF-8 slices; paragraph-aware splitting only if retrieval quality needs it.
+        let mut chunks = Vec::new();
+        let mut remaining = input.text.as_str();
+        while !remaining.is_empty() {
+            let mut end = remaining.len().min(MAX_DOCUMENT_CHUNK);
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            chunks.push(&remaining[..end]);
+            remaining = &remaining[end..];
+        }
+        if chunks.len() > 128 {
+            bail!("document has too many chunks");
+        }
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        {
+            let mut statement =
+                tx.prepare("SELECT stored_path FROM documents WHERE source_path=?1")?;
+            let mut rows = statement.query([&input.source_path])?;
+            if let Some(row) = rows.next()? {
+                bounded_row_fields(row, &[(0, 8192)])?;
+                let old_path: Option<String> = row.get(0)?;
+                if old_path != input.stored_path {
+                    if let Some(path) = old_path {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO document_copy_cleanup(path) VALUES(?1)",
+                            [path],
+                        )?;
+                    }
+                }
+            }
+        }
+        tx.execute("INSERT INTO documents(title,source_path,stored_path,content_hash,modified_at,indexed_at,indexing_version,project,enabled,chunk_count,text_bytes) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(source_path) DO UPDATE SET title=excluded.title,stored_path=excluded.stored_path,content_hash=excluded.content_hash,modified_at=excluded.modified_at,indexed_at=excluded.indexed_at,indexing_version=excluded.indexing_version,project=excluded.project,chunk_count=excluded.chunk_count,text_bytes=excluded.text_bytes",
+            params![title,input.source_path,input.stored_path,input.content_hash,input.modified_at,now,input.indexing_version,project,input.enabled,chunks.len() as i64,input.text.len() as i64])?;
+        let id: i64 = tx.query_row(
+            "SELECT id FROM documents WHERE source_path=?1",
+            [&input.source_path],
+            |r| r.get(0),
+        )?;
+        tx.execute("DELETE FROM document_chunks WHERE document_id=?1", [id])?;
+        {
+            let mut insert = tx.prepare("INSERT INTO document_chunks(document_id,chunk_index,title,text,project) VALUES(?1,?2,?3,?4,?5)")?;
+            for (index, text) in chunks.iter().enumerate() {
+                insert.execute(params![id, index as i64, title, text, project])?;
+            }
+        }
+        if let Some(path) = &input.stored_path {
+            tx.execute("DELETE FROM document_copy_cleanup WHERE path=?1", [path])?;
+        }
+        tx.commit()?;
+        self.document(id)
+    }
+
+    pub fn document(&self, id: i64) -> Result<Document> {
+        validate_id(id, "document")?;
+        let sql = format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE id=?1");
+        let mut statement = self.conn.prepare(&sql)?;
+        let mut rows = statement.query([id])?;
+        document_from_row(rows.next()?.context("document not found")?)
+    }
+
+    pub fn list_documents(&self, before_id: Option<i64>, limit: usize) -> Result<DocumentPage> {
+        validate_memory_limit(limit)?;
+        if let Some(id) = before_id {
+            validate_id(id, "document cursor")?;
+        }
+        let sql = format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE (?1 IS NULL OR id<?1) ORDER BY id DESC LIMIT ?2");
+        let mut statement = self.conn.prepare(&sql)?;
+        let mut rows = statement.query(params![before_id, (limit + 1) as i64])?;
+        let mut documents = Vec::new();
+        while let Some(row) = rows.next()? {
+            documents.push(document_from_row(row)?);
+        }
+        let has_more = documents.len() > limit;
+        documents.truncate(limit);
+        let next = if has_more {
+            documents.last().map(|d| d.id)
+        } else {
+            None
+        };
+        Ok(DocumentPage {
+            documents,
+            has_more,
+            next,
+        })
+    }
+
+    pub fn document_source(&self, id: i64) -> Result<DocumentSource> {
+        validate_id(id, "document")?;
+        let mut statement = self
+            .conn
+            .prepare("SELECT source_path,stored_path,project,enabled FROM documents WHERE id=?1")?;
+        let mut rows = statement.query([id])?;
+        let row = rows.next()?.context("document not found")?;
+        bounded_row_fields(row, &[(0, 8192), (1, 8192), (2, 400)])?;
+        Ok(DocumentSource {
+            source_path: row.get(0)?,
+            stored_path: row.get(1)?,
+            project: row.get(2)?,
+            enabled: row.get(3)?,
+        })
+    }
+
+    pub fn set_document_enabled(&self, id: i64, enabled: bool) -> Result<Document> {
+        validate_id(id, "document")?;
+        if self.conn.execute(
+            "UPDATE documents SET enabled=?1 WHERE id=?2",
+            params![enabled, id],
+        )? != 1
+        {
+            bail!("document not found");
+        }
+        self.document(id)
+    }
+
+    pub fn delete_document(&self, id: i64) -> Result<Option<String>> {
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let source = self.document_source(id)?;
+        if let Some(path) = &source.stored_path {
+            tx.execute(
+                "INSERT OR IGNORE INTO document_copy_cleanup(path) VALUES(?1)",
+                [path],
+            )?;
+        }
+        if tx.execute("DELETE FROM documents WHERE id=?1", [id])? != 1 {
+            bail!("document not found");
+        }
+        tx.commit()?;
+        Ok(source.stored_path)
+    }
+
+    pub fn pending_document_copies(&self, limit: usize) -> Result<Vec<String>> {
+        if !(1..=100).contains(&limit) {
+            bail!("document cleanup limit must be between 1 and 100");
+        }
+        let mut statement = self
+            .conn
+            .prepare("SELECT path FROM document_copy_cleanup ORDER BY path LIMIT ?1")?;
+        let mut rows = statement.query([limit as i64])?;
+        let mut paths = Vec::new();
+        while let Some(row) = rows.next()? {
+            bounded_row_fields(row, &[(0, 8192)])?;
+            paths.push(row.get(0)?);
+        }
+        Ok(paths)
+    }
+
+    pub fn complete_document_copy_cleanup(&self, path: &str) -> Result<()> {
+        if path.is_empty() || path.len() > 8192 || path.contains('\0') {
+            bail!("invalid document cleanup path");
+        }
+        self.conn
+            .execute("DELETE FROM document_copy_cleanup WHERE path=?1", [path])?;
+        Ok(())
+    }
+
+    pub fn search_documents(&self, query: &str, limit: usize) -> Result<Vec<DocumentChunk>> {
+        if !(1..=50).contains(&limit) {
+            bail!("document search limit must be between 1 and 50");
+        }
+        self.search_document_rows(query, limit, false)
+    }
+
+    pub fn queue_document_copy_cleanup(&self, path: &str) -> Result<()> {
+        if path.is_empty() || path.len() > 8192 || path.contains('\0') {
+            bail!("invalid copied-source path");
+        }
+        self.conn.execute(
+            "INSERT OR IGNORE INTO document_copy_cleanup(path) VALUES (?1)",
+            [path],
+        )?;
+        Ok(())
+    }
+
+    pub fn retrieve_documents(&self, query: &str, limit: usize) -> Result<Vec<DocumentChunk>> {
+        if !(1..=8).contains(&limit) {
+            bail!("document retrieval limit must be between 1 and 8");
+        }
+        self.search_document_rows(query, limit, true)
+    }
+
+    fn search_document_rows(
+        &self,
+        query: &str,
+        limit: usize,
+        enabled_only: bool,
+    ) -> Result<Vec<DocumentChunk>> {
+        let query = literal_search_query_with(query, enabled_only)?;
+        let mut statement = self.conn.prepare("SELECT c.id,c.document_id,d.title,d.source_path,d.content_hash,d.indexing_version,c.chunk_index,c.text FROM document_chunks AS c JOIN documents AS d ON d.id=c.document_id JOIN document_chunks_fts ON document_chunks_fts.rowid=c.id WHERE document_chunks_fts MATCH ?1 AND (?3=0 OR d.enabled=1) ORDER BY bm25(document_chunks_fts,3.0,1.0,2.0),c.id DESC LIMIT ?2")?;
+        let mut rows = statement.query(params![query, limit as i64, enabled_only])?;
+        let mut result = Vec::new();
+        let mut bytes = 0;
+        while let Some(row) = rows.next()? {
+            bounded_row_fields(
+                row,
+                &[(2, 800), (3, 8192), (4, 64), (7, MAX_DOCUMENT_CHUNK)],
+            )?;
+            let size = row.get_ref(7)?.as_str()?.len();
+            if bytes + size > 16 * 1024 {
+                break;
+            }
+            result.push(DocumentChunk {
+                id: row.get(0)?,
+                document_id: row.get(1)?,
+                title: row.get(2)?,
+                source_path: row.get(3)?,
+                content_hash: row.get(4)?,
+                indexing_version: row.get(5)?,
+                chunk_index: usize::try_from(row.get::<_, i64>(6)?)?,
+                text: row.get(7)?,
+            });
+            bytes += size;
+        }
+        Ok(result)
+    }
+
     pub fn save_memory(
         &self,
         id: Option<i64>,
@@ -1534,6 +1824,86 @@ fn literal_search_query_with(query: &str, any_term: bool) -> Result<String> {
         bail!("search query must contain 1 to {MAX_TRANSCRIPT_SEARCH_TERMS} terms");
     }
     Ok(terms.join(if any_term { " OR " } else { " AND " }))
+}
+
+const DOCUMENT_COLUMNS: &str = "id,title,source_path,stored_path,content_hash,modified_at,indexed_at,indexing_version,project,enabled,chunk_count,text_bytes";
+
+fn bounded_row_fields(row: &rusqlite::Row<'_>, fields: &[(usize, usize)]) -> Result<()> {
+    for &(index, maximum) in fields {
+        let value = row.get_ref(index)?;
+        if !matches!(value, rusqlite::types::ValueRef::Null) && value.as_str()?.len() > maximum {
+            bail!("stored document field exceeds its bound");
+        }
+    }
+    Ok(())
+}
+
+fn document_from_row(row: &rusqlite::Row<'_>) -> Result<Document> {
+    bounded_row_fields(row, &[(1, 800), (2, 8192), (3, 8192), (4, 64), (8, 400)])?;
+    let source_policy = if matches!(row.get_ref(3)?, rusqlite::types::ValueRef::Null) {
+        "reference"
+    } else {
+        "copy"
+    };
+    Ok(Document {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        source_path: row.get(2)?,
+        source_policy: source_policy.into(),
+        content_hash: row.get(4)?,
+        modified_at: row.get(5)?,
+        indexed_at: row.get(6)?,
+        indexing_version: row.get(7)?,
+        project: row.get(8)?,
+        enabled: row.get(9)?,
+        chunk_count: usize::try_from(row.get::<_, i64>(10)?)?,
+        text_bytes: usize::try_from(row.get::<_, i64>(11)?)?,
+    })
+}
+
+fn validate_document_input(input: &DocumentInput) -> Result<()> {
+    validate_time(input.modified_at)?;
+    let title = input.title.trim();
+    if title.is_empty()
+        || title.len() > 800
+        || title.chars().count() > 200
+        || title.chars().any(char::is_control)
+    {
+        bail!("document title must be 1 to 200 characters / 800 bytes without controls");
+    }
+    for path in [
+        Some(input.source_path.as_str()),
+        input.stored_path.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if path.is_empty() || path.len() > 8192 || path.contains('\0') {
+            bail!("document path must be 1 to 8192 bytes without NUL");
+        }
+    }
+    if input.content_hash.len() != 64 || !input.content_hash.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        bail!("document hash must be 64 hexadecimal characters");
+    }
+    if input.indexing_version == 0 {
+        bail!("document indexing version must be positive");
+    }
+    if input.text.trim().is_empty() || input.text.len() > MAX_DOCUMENT_TEXT {
+        bail!("document text must be 1 to {MAX_DOCUMENT_TEXT} bytes");
+    }
+    if input
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .is_some_and(|p| {
+            p.len() > 400 || p.chars().count() > 100 || p.chars().any(char::is_control)
+        })
+    {
+        bail!("document project must be at most 100 characters / 400 bytes without controls");
+    }
+    Ok(())
 }
 
 fn validate_memory_limit(limit: usize) -> Result<()> {
@@ -1797,13 +2167,156 @@ mod tests {
     }
 
     #[test]
+    fn documents_upgrade_reindex_sharing_utf8_and_deletion() -> Result<()> {
+        let path = test_path("harness-documents");
+        let result = (|| -> Result<()> {
+            let old = Store::open(&path)?;
+            let settings = old.settings()?;
+            old.conn.execute_batch("DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; PRAGMA user_version=7;")?;
+            drop(old);
+            let store = Store::open(&path)?;
+            assert_eq!(store.settings()?, settings);
+            assert_eq!(
+                store
+                    .conn
+                    .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
+                8
+            );
+            let mut input = DocumentInput {
+                title: " Budget OR review ".into(),
+                source_path: "/private/budget.md".into(),
+                stored_path: None,
+                content_hash: "a".repeat(64),
+                modified_at: 100,
+                indexing_version: 1,
+                text: "alpha beta résumé 界".into(),
+                project: Some(" Atlas ".into()),
+                enabled: false,
+            };
+            let original = store.upsert_document(&input, 200)?;
+            assert_eq!(original.source_policy, "reference");
+            assert_eq!(original.title, "Budget OR review");
+            assert_eq!(original.project.as_deref(), Some("Atlas"));
+            assert!(store.retrieve_documents("alpha", 8)?.is_empty());
+            store.set_document_enabled(original.id, true)?;
+            assert_eq!(store.retrieve_documents("alpha nonexistent", 8)?.len(), 1);
+            assert_eq!(store.retrieve_documents("\"alpha\"", 8)?.len(), 1);
+            // OR is searched as a literal token, not injected FTS syntax.
+            assert!(store.retrieve_documents("missing NOT", 8)?.is_empty());
+            assert_eq!(store.retrieve_documents("OR", 8)?.len(), 1);
+            input.enabled = true;
+            input.title = "Unicode chunks".into();
+            input.text = "replacement 界".repeat(16_000);
+            input.content_hash = "b".repeat(64);
+            input.stored_path = Some("/private/app/docs/budget.md".into());
+            let revised = store.upsert_document(&input, 300)?;
+            assert_eq!(revised.id, original.id);
+            assert_eq!(revised.source_policy, "copy");
+            assert_eq!(revised.text_bytes, input.text.len());
+            assert!(revised.chunk_count > 1 && revised.chunk_count <= 128);
+            assert!(store.retrieve_documents("alpha", 8)?.is_empty());
+            let hits = store.retrieve_documents("replacement", 8)?;
+            assert!(!hits.is_empty());
+            assert!(hits.iter().map(|c| c.text.len()).sum::<usize>() <= 16 * 1024);
+            assert!(hits
+                .iter()
+                .all(|c| c.content_hash == input.content_hash && c.text.len() <= 4096));
+            let rebuilt = store
+                .conn
+                .prepare(
+                    "SELECT text FROM document_chunks WHERE document_id=?1 ORDER BY chunk_index",
+                )?
+                .query_map([original.id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .concat();
+            assert_eq!(rebuilt, input.text);
+            assert_eq!(
+                store.document_source(original.id)?.stored_path,
+                input.stored_path
+            );
+            // A replacement copy keeps its old cleanup locator durably too.
+            input.stored_path = Some("/private/app/docs/replacement.md".into());
+            let revised = store.upsert_document(&input, 350)?;
+            assert_eq!(
+                store.pending_document_copies(100)?,
+                vec!["/private/app/docs/budget.md".to_owned()]
+            );
+            store.complete_document_copy_cleanup("/private/app/docs/budget.md")?;
+            assert!(!serde_json::to_string(&revised)?.contains("storedPath"));
+            drop(store);
+            let store = Store::open(&path)?;
+            assert_eq!(store.document(original.id)?, revised);
+            store.set_document_enabled(original.id, false)?;
+            assert!(store.retrieve_documents("replacement", 8)?.is_empty());
+            input.source_path = "/private/second.md".into();
+            input.text = "second content".into();
+            let second = store.upsert_document(&input, 400)?;
+            let page = store.list_documents(None, 1)?;
+            assert_eq!(page.documents[0].id, second.id);
+            assert!(page.has_more);
+            assert_eq!(
+                store.list_documents(page.next, 1)?.documents[0].id,
+                original.id
+            );
+            assert_eq!(
+                store.delete_document(original.id)?,
+                Some("/private/app/docs/replacement.md".into())
+            );
+            assert_eq!(
+                store.pending_document_copies(100)?,
+                vec!["/private/app/docs/replacement.md".to_owned()]
+            );
+            drop(store);
+            let store = Store::open(&path)?;
+            assert_eq!(store.pending_document_copies(100)?.len(), 1);
+            store.complete_document_copy_cleanup("/private/app/docs/replacement.md")?;
+            assert!(store.pending_document_copies(100)?.is_empty());
+            assert!(store.pending_document_copies(101).is_err());
+            assert!(store.document(original.id).is_err());
+            assert!(store.delete_document(original.id).is_err());
+            assert_eq!(
+                store.conn.query_row(
+                    "SELECT COUNT(*) FROM document_chunks WHERE document_id=?1",
+                    [original.id],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                0
+            );
+            assert_eq!(store.conn.query_row("SELECT COUNT(*) FROM document_chunks_fts WHERE document_chunks_fts MATCH 'replacement'",[],|r|r.get::<_,i64>(0))?,0);
+            assert!(store.list_documents(None, 51).is_err());
+            assert!(store.list_documents(Some(0), 1).is_err());
+            assert!(store.retrieve_documents("x", 9).is_err());
+            assert!(store.retrieve_documents(" ", 1).is_err());
+            input.text = "界".repeat(MAX_DOCUMENT_TEXT / 3 + 1);
+            assert!(store.upsert_document(&input, 500).is_err());
+            input.text = "ok".into();
+            input.title = "a".repeat(201);
+            assert!(store.upsert_document(&input, 500).is_err());
+            input.title = "ok".into();
+            input.content_hash = "z".repeat(64);
+            assert!(store.upsert_document(&input, 500).is_err());
+            input.content_hash = "a".repeat(64);
+            input.project = Some("a".repeat(101));
+            assert!(store.upsert_document(&input, 500).is_err());
+            input.project = None;
+            input.source_path = "bad\0path".into();
+            assert!(store.upsert_document(&input, 500).is_err());
+            Ok(())
+        })();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+        result
+    }
+
+    #[test]
     fn manual_memory_upgrade_persistence_literal_search_and_bounds() -> Result<()> {
         let path =
             std::env::temp_dir().join(format!("harness-memory-{}.sqlite", uuid::Uuid::new_v4()));
         let result = (|| -> Result<()> {
             // Exercise the actual previous-schema upgrade without changing other data.
             let old = Store::open(&path)?;
-            old.conn.execute_batch("DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; PRAGMA user_version=6;")?;
+            old.conn.execute_batch("DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; PRAGMA user_version=6;")?;
             let settings = old.settings()?;
             drop(old);
             let store = Store::open(&path)?;
@@ -1812,7 +2325,7 @@ mod tests {
                 store
                     .conn
                     .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
-                7
+                SCHEMA_VERSION
             );
             let mut input = MemoryInput {
                 title: "  Budget OR review  ".into(),

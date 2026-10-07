@@ -1,7 +1,7 @@
 {
   "name": "harness",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
@@ -11,7 +11,8 @@
     "prepare:model": "node scripts/prepare-model.mjs",
     "tauri": "tauri",
     "check:ui": "node scripts/check-response-ui.mjs",
-    "check:memory": "node scripts/check-memory-ui.mjs"
+    "check:memory": "node scripts/check-memory-ui.mjs",
+    "check:documents": "node scripts/check-documents-ui.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.0",

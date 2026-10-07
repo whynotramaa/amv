@@ -143,3 +143,16 @@ export async function openMemory(): Promise<void> {
 export const closeMemory = (): Promise<void> => invoke('close_memory');
 export const startChat = (): Promise<MeetingState> => invoke('start_chat');
 export const startDragging = (): Promise<void> => desktop ? getCurrentWindow().startDragging() : Promise.resolve();
+
+export type DocumentEntry = { id: number; title: string; sourcePath: string; sourcePolicy: 'reference' | 'copy'; contentHash: string; modifiedAt: number; indexedAt: number; indexingVersion: number; project: string | null; enabled: boolean; chunkCount: number; textBytes: number };
+export type DocumentPage = { documents: DocumentEntry[]; hasMore: boolean; next: number | null };
+export type DocumentChunk = { id: number; documentId: number; title: string; sourcePath: string; contentHash: string; indexingVersion: number; chunkIndex: number; text: string };
+export const listDocuments = (beforeId: number | null = null): Promise<DocumentPage> => desktop ? invoke('list_documents', { beforeId }) : Promise.resolve({ documents: [], hasMore: false, next: null });
+export const importDocument = (sourcePolicy: 'reference' | 'copy', project: string | null, enabled: boolean): Promise<DocumentEntry | null> => invoke('import_document', { sourcePolicy, project, enabled });
+export const reindexDocument = (id: number): Promise<DocumentEntry> => invoke('reindex_document', { id });
+export const setDocumentEnabled = (id: number, enabled: boolean): Promise<DocumentEntry> => invoke('set_document_enabled', { id, enabled });
+export const deleteDocument = (id: number): Promise<{ cleanupPending: boolean }> => invoke('delete_document', { id });
+export const checkDocument = (id: number): Promise<{ changed: boolean; missing: boolean }> => invoke('check_document', { id });
+export const searchDocuments = (query: string): Promise<DocumentChunk[]> => desktop ? invoke('search_documents', { query }) : Promise.resolve([]);
+export const closeDocuments = (): Promise<void> => invoke('close_documents');
+export async function openDocuments(): Promise<void> { if (desktop) await invoke('open_documents'); else window.open('?view=documents', 'harness-documents'); }

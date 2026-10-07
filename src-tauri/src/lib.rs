@@ -3,6 +3,9 @@ pub mod auth;
 pub mod context;
 pub mod credentials;
 pub mod dispatch;
+pub mod documents;
+#[cfg(feature = "desktop")]
+mod file_picker;
 pub mod inference;
 #[cfg(feature = "desktop")]
 pub mod meeting;

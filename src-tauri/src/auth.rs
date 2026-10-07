@@ -328,7 +328,12 @@ impl AuthGrant {
         }
         let mut token: TokenResponse =
             serde_json::from_slice(&body.bytes).context("Invalid OAuth refresh response")?;
-        if token.refresh_token.as_deref().unwrap_or_default().is_empty() {
+        if token
+            .refresh_token
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty()
+        {
             token.refresh_token = Some(self.tokens.refresh_token().to_owned());
         }
         if token.id_token.as_deref().unwrap_or_default().is_empty() {
@@ -778,6 +783,7 @@ impl Drop for OpaqueTokenBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    static CALLBACK_PORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
     #[test]
     fn token_rotation_requires_a_replacement_refresh_token() {
         let complete = br#"{"access_token":"access","refresh_token":"replacement","id_token":"identity","token_type":"Bearer","expires_in":3600,"scope":"chatgpt.tokens.use.direct"}"#;
@@ -790,6 +796,7 @@ mod tests {
 
     #[test]
     fn pkce_and_url_are_safe() {
+        let _port = CALLBACK_PORT.lock().unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let attempt = runtime
             .block_on(AuthAttempt::prepare("urn:uuid:test"))
@@ -807,6 +814,7 @@ mod tests {
 
     #[test]
     fn cancellation_before_callback_never_reaches_token_exchange() {
+        let _port = CALLBACK_PORT.lock().unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (cancel, receiver) = tokio::sync::oneshot::channel();
         let (attempt, client) = runtime.block_on(async {

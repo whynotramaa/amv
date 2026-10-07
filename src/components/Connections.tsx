@@ -101,7 +101,7 @@ export default function Connections({ onChanged }: { onChanged: () => void }) {
           setModelBusy(account.accountId); setNotice(null);
           try {
             const models = await chatgptModels(account.accountId);
-            if (mounted.current && modelGeneration.current === generation && activeAccount.current === account.accountId) setModelsByAccount(old => ({ ...old, [account.accountId]: models }));
+            if (mounted.current && modelGeneration.current === generation && activeAccount.current === account.accountId) { setModelsByAccount(old => ({ ...old, [account.accountId]: models })); if (!models.length) setNotice({ text: 'ChatGPT returned no models for this account.', error: true }); }
           } catch (error) { if (mounted.current && modelGeneration.current === generation) setNotice({ text: error instanceof Error ? error.message : String(error), error: true }); }
           finally { if (mounted.current && modelGeneration.current === generation) setModelBusy(null); }
         }} onSelectModel={async modelId => {

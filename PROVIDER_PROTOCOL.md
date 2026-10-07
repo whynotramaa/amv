@@ -5,6 +5,10 @@ sections 14 and 38.3–38.5. It records only facts verified against current
 primary documentation. Anything marked **unknown** must not be implemented by
 guessing.
 
+## Current source gap
+
+Newer source uses a fixed public OAuth client ID rather than the dynamic flow described below. It is preserved pending integration verification. That source change does not fulfill the user's dynamic-registration decision or establish third-party eligibility. The following research remains the intended contract, not a claim of current implementation.
+
 ## Decision that gates the ChatGPT path
 
 OpenAI's current docs describe an OSS/local dynamic-registration flow, but the

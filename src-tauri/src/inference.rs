@@ -140,9 +140,9 @@ where
             .header("session_id", uuid::Uuid::new_v4().to_string());
     }
     let response = timeout(Duration::from_secs(10), post.body(body).send())
-    .await
-    .map_err(|_| local_failure(FailureKind::Timeout))?
-    .map_err(|error| transport_failure(error.is_timeout()))?;
+        .await
+        .map_err(|_| local_failure(FailureKind::Timeout))?
+        .map_err(|error| transport_failure(error.is_timeout()))?;
 
     let request_id = response
         .headers()
@@ -322,7 +322,11 @@ fn responses_body(request: &StreamRequest) -> Value {
                 instructions = Some(message.content.clone());
             }
         } else {
-            let kind = if message.role == "assistant" { "output_text" } else { "input_text" };
+            let kind = if message.role == "assistant" {
+                "output_text"
+            } else {
+                "input_text"
+            };
             input.push(json!({ "type": "message", "role": message.role, "content": [{ "type": kind, "text": message.content }] }));
         }
     }

@@ -385,6 +385,10 @@
       "name": "Local memory management",
       "description": "Separate normal-size library/editor view using the existing neutral tokens, Poppins and original book icon. Default-off answer permission, manual provenance, explicit search, bounded replacing pages, retained failed-save drafts, inline discard/delete/close confirmation. No shadows; narrow layouts stack.",
       "html": "<section><h2>Memory</h2><p>New entries stay local until enabled for relevant authorized answers.</p></section>"
+    },
+    {
+      "name": "Local documents management",
+      "description": "Separate bounded library and provenance view; source reference/copy disclosure, default-off sharing, explicit local search/reindex/deletion, shared neutral tokens and original stroke icons. Native acceptance pending."
     }
   ],
   "narrative": {

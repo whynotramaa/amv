@@ -3034,3 +3034,10 @@ registration conflicts, and has a reset-to-default button per row.
 | Ordered fallback | OpenRouter, LiteLLM | retry next provider on 429 and 5xx | in-process fallback chain |
 | Project context | ChatGPT Projects, Claude Projects | instructions, pinned files, retrieval | context profiles |
 | Streaming Markdown | Vercel streamdown | repairs unterminated blocks while streaming | same library |
+
+
+### Document checkpoint — 2026-10-07
+
+Phase E now includes bounded local TXT/Markdown/JSON ingestion, explicit reference/copy policy, metadata/hash/version provenance, UTF-8 chunks, FTS5 search, explicit reindexing and deletion, and default-off per-document answer permission. Enabled-only lexical retrieval feeds the existing untrusted evidence compiler; original absolute paths remain local. A separate management window uses the established tokens, Poppins/Geist Mono, original icons and thin borders without shadows. PDF/DOCX, embeddings, hybrid retrieval, entity relationships, reranking and sent-context inspection remain unfinished.
+
+Newer source changes are preserved: Sherpa ONNX/Parakeet TDT replaces Whisper, WebView2 uses a downloaded bootstrapper, and OAuth uses a fixed public client ID. These do not constitute acceptance of the agreed dynamic-registration, offline clean-install or low-RAM requirements. Their runtime and integration gaps remain open.
