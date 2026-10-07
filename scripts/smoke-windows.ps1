@@ -39,6 +39,16 @@ public static class Win {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder text, int max);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    public static IntPtr FindTauri(uint target) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hwnd, _) => {
+            uint pid; GetWindowThreadProcessId(hwnd, out pid);
+            var cls = new StringBuilder(256); GetClassName(hwnd, cls, 256);
+            if (pid == target && cls.ToString() == "Tauri Window") { found = hwnd; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
     public static List<string> Describe(uint target) {
         var rows = new List<string>();
         EnumWindows((hwnd, _) => {
@@ -61,6 +71,30 @@ function Save-Windows([string]$Name) {
     $rows = foreach ($process in @(Get-Process harness -ErrorAction SilentlyContinue)) { [Win]::Describe([uint32]$process.Id) }
     "--- windows $Name" | Tee-Object -Append (Join-Path $Out 'result.txt')
     $rows | Where-Object { $_ -match 'Tao|Harness' } | Tee-Object -Append (Join-Path $Out 'result.txt')
+}
+
+# UI Automation reads the rendered page even though the window is hidden from capture.
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+function Save-Accessibility([string]$Name) {
+    "--- accessibility $Name" | Tee-Object -Append (Join-Path $Out 'result.txt')
+    foreach ($process in @(Get-Process harness -ErrorAction SilentlyContinue)) {
+        $hwnd = [Win]::FindTauri([uint32]$process.Id)
+        if ($hwnd -eq [IntPtr]::Zero) { continue }
+        $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $queue = New-Object System.Collections.Queue
+        $queue.Enqueue(@([System.Windows.Automation.AutomationElement]::FromHandle($hwnd), 0))
+        $count = 0
+        while ($queue.Count -gt 0 -and $count -lt 120) {
+            $element, $depth = $queue.Dequeue()
+            $info = $element.Current
+            $rect = $info.BoundingRectangle
+            $line = ('  ' * [Math]::Min($depth, 12)) + "$($info.ControlType.ProgrammaticName) '$($info.Name)' offscreen=$($info.IsOffscreen) rect=($([int]$rect.X),$([int]$rect.Y),$([int]$rect.Width)x$([int]$rect.Height))"
+            $line | Tee-Object -Append (Join-Path $Out 'result.txt')
+            $count++
+            $child = $walker.GetFirstChild($element)
+            while ($child) { $queue.Enqueue(@($child, ($depth + 1))); $child = $walker.GetNextSibling($child) }
+        }
+    }
 }
 
 # Reads the page through WebView2's DevTools port, which content protection does not hide.
@@ -102,6 +136,10 @@ function Save-Page([string]$Name) {
 }
 
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
+# Tauri passes its own browser arguments, so also set the per-app policy that WebView2 honors.
+$policy = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+New-Item -Force $policy | Out-Null
+New-ItemProperty -Force $policy -Name 'harness.exe' -Value '--remote-debugging-port=9222' | Out-Null
 $app = Start-Process $exe.FullName -PassThru
 Start-Sleep -Seconds 8
 Save-Screen 'launch-8s'
@@ -109,6 +147,7 @@ Save-Windows 'launch-8s'
 Start-Sleep -Seconds 12
 Save-Screen 'launch-20s'
 Save-Windows 'launch-20s'
+Save-Accessibility 'launch-20s'
 Save-Page 'launch-20s'
 $alive = -not $app.HasExited
 "alive after 20s: $alive" | Tee-Object -Append (Join-Path $Out 'result.txt')
@@ -151,4 +190,5 @@ Get-ChildItem $Out -Filter *.png | ForEach-Object {
 }
 
 Get-Process harness -ErrorAction SilentlyContinue | Stop-Process -Force
+Remove-Item -Force -Recurse 'HKCU:\Software\Policies\Microsoft\Edge\WebView2' -ErrorAction SilentlyContinue
 if (-not $alive) { throw 'Harness exited during startup. See the smoke artifact.' }
