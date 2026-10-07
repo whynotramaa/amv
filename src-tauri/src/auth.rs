@@ -1,4 +1,4 @@
-//! ChatGPT Sign in with ChatGPT public-client flow.
+//! Official Sign in with ChatGPT dynamic public-client flow.
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::future::{select, Either};
@@ -14,12 +14,14 @@ use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
 const ISSUER: &str = "https://auth.openai.com";
-const AUTHORIZE: &str = "https://auth.openai.com/oauth/authorize";
-const TOKEN: &str = "https://auth.openai.com/oauth/token";
+const AUTHORIZE: &str = "https://auth.openai.com/api/accounts/authorize";
+const TOKEN: &str = "https://auth.openai.com/api/accounts/oauth/token";
 const JWKS: &str = "https://auth.openai.com/.well-known/jwks.json";
 const REVOKE: &str = "https://auth.openai.com/api/accounts/oauth/revoke";
-const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const CALLBACK_PORT: u16 = 1455;
+const DYNAMIC_CLIENT: &str = "dynamic_agent_client";
+const RESOURCE: &str = "https://api.openai.com/v1";
+const SCOPES: &str =
+    "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 const MAX_HEADERS: usize = 8 * 1024;
 const MAX_BODY: usize = 1024 * 1024;
 
@@ -31,6 +33,7 @@ pub struct AuthAttempt {
     client_id: String,
     state: Zeroizing<String>,
     verifier: Zeroizing<String>,
+    nonce: Zeroizing<String>,
     expected_subject: Option<String>,
 }
 
@@ -73,25 +76,30 @@ impl AuthAttempt {
         {
             bail!("Invalid host identifier")
         }
-        let listener = TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
+        let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
-            .context("Port 1455 is busy. Close Codex or any other ChatGPT sign-in and try again")?;
-        let redirect_uri = format!("http://localhost:{CALLBACK_PORT}/auth/callback");
+            .context("Unable to start the local sign-in callback")?;
+        let redirect_uri = format!(
+            "http://127.0.0.1:{}/auth/callback",
+            listener.local_addr()?.port()
+        );
         let state = random_url_secret(32)?;
+        let nonce = random_url_secret(32)?;
         let verifier = random_url_secret(32)?;
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        let client_id = CLIENT_ID.to_owned();
+        let client_id = DYNAMIC_CLIENT.to_owned();
         let mut query = vec![
             ("response_type", "code".to_owned()),
             ("client_id", client_id.clone()),
+            ("agent_name_hint", "Harness".into()),
+            ("ext_agent_host_id", host_id.into()),
             ("redirect_uri", redirect_uri.clone()),
-            ("scope", "openid profile email offline_access".into()),
+            ("scope", SCOPES.into()),
+            ("resource", RESOURCE.into()),
             ("code_challenge", challenge),
             ("code_challenge_method", "S256".into()),
-            ("id_token_add_organizations", "true".into()),
-            ("codex_cli_simplified_flow", "true".into()),
             ("state", state.to_string()),
-            ("originator", "codex_cli_rs".into()),
+            ("nonce", nonce.to_string()),
         ];
         let authorization = Url::parse_with_params(AUTHORIZE, query.drain(..))?.to_string();
         Ok(Self {
@@ -101,6 +109,7 @@ impl AuthAttempt {
             client_id,
             state,
             verifier,
+            nonce,
             expected_subject: None,
         })
     }
@@ -115,11 +124,13 @@ impl AuthAttempt {
         id_token_hint: Option<&str>,
         login_hint: Option<&str>,
     ) -> Result<Self> {
-        if issued_client_id != CLIENT_ID
-            || issued_client_id.chars().any(char::is_control)
-            || issued_client_id.chars().any(char::is_control)
-        {
-            bail!("Invalid issued client identifier")
+        validate_client_id(issued_client_id)?;
+        if id_token_hint.is_some_and(|hint| {
+            hint.is_empty() || hint.len() > 16 * 1024 || hint.chars().any(char::is_control)
+        }) || login_hint.is_some_and(|hint| {
+            hint.is_empty() || hint.len() > 512 || hint.chars().any(char::is_control)
+        }) {
+            bail!("Invalid account sign-in hint")
         }
         let mut attempt = Self::prepare(host_id).await?;
         attempt.client_id = issued_client_id.to_owned();
@@ -127,7 +138,7 @@ impl AuthAttempt {
         let mut query: Vec<(String, String)> = url
             .query_pairs()
             .into_owned()
-            .filter(|(key, _)| key != "client_id")
+            .filter(|(key, _)| key != "client_id" && key != "agent_name_hint")
             .collect();
         query.insert(0, ("client_id".into(), issued_client_id.into()));
         if let Some(hint) = id_token_hint {
@@ -190,9 +201,7 @@ impl AuthAttempt {
             .client_id
             .clone()
             .unwrap_or_else(|| self.client_id.clone());
-        if issued_client_id != CLIENT_ID {
-            bail!("OAuth provider returned an unexpected client")
-        }
+        validate_client_id(&issued_client_id)?;
         let response = checked_response(
             client.post(TOKEN).form(&[
                 ("grant_type", "authorization_code"),
@@ -200,6 +209,7 @@ impl AuthAttempt {
                 ("code", callback.code.as_str()),
                 ("code_verifier", self.verifier.as_str()),
                 ("redirect_uri", self.redirect_uri.as_str()),
+                ("resource", RESOURCE),
             ]),
             TOKEN,
         )
@@ -210,15 +220,25 @@ impl AuthAttempt {
         }
         let token: TokenResponse =
             serde_json::from_slice(&body.bytes).context("Invalid OAuth token response")?;
-        let token = token.required()?;
+        if let Err(error) = token.validate_required() {
+            revoke_rejected_token(client, &issued_client_id, &token).await;
+            return Err(error);
+        }
         let claims = validate_id_token(
             client,
             token.id_token.as_deref().unwrap_or_default(),
             &issued_client_id,
-            None,
+            Some(&self.nonce),
             self.expected_subject.as_deref(),
         )
-        .await?;
+        .await;
+        let claims = match claims {
+            Ok(claims) => claims,
+            Err(error) => {
+                revoke_rejected_token(client, &issued_client_id, &token).await;
+                return Err(error);
+            }
+        };
         let subject = claims.sub;
         let account_id = account_key(&issued_client_id, &subject);
         Ok(AuthGrant {
@@ -261,6 +281,12 @@ impl AuthAttempt {
 }
 
 impl AuthGrant {
+    pub fn plan_usage_enabled(&self) -> bool {
+        self.subscopes
+            .iter()
+            .any(|scope| scope == "chatgpt.tokens.use.direct")
+    }
+
     pub fn tokens(&self) -> &OpaqueTokenBundle {
         &self.tokens
     }
@@ -312,61 +338,64 @@ impl AuthGrant {
 
     pub async fn refresh(&self, client: &Client) -> Result<Self> {
         validate_grant(self)?;
-        let response = checked_response(
-            client.post(TOKEN).json(&serde_json::json!({
-                "client_id": self.issued_client_id,
-                "grant_type": "refresh_token",
-                "refresh_token": self.tokens.refresh_token(),
-                "scope": "openid profile email",
-            })),
-            TOKEN,
-        )
-        .await?;
-        let body = bounded_body(response).await?;
-        if !body.status.is_success() {
-            bail!("OAuth refresh failed ({})", body.status.as_u16())
+        let response =
+            checked_response(client.post(TOKEN).form(&refresh_form(self)), TOKEN).await?;
+        let rotated = response.status() == StatusCode::OK;
+        let body = bounded_body(response).await.map_err(|error| {
+            if rotated {
+                error.context(RefreshRequiresSignIn)
+            } else {
+                error
+            }
+        })?;
+        if body.status != StatusCode::OK {
+            return Err(refresh_response_error(body.status, &body.bytes));
         }
-        let mut token: TokenResponse =
-            serde_json::from_slice(&body.bytes).context("Invalid OAuth refresh response")?;
-        if token
-            .refresh_token
-            .as_deref()
-            .unwrap_or_default()
-            .is_empty()
-        {
-            token.refresh_token = Some(self.tokens.refresh_token().to_owned());
+        // HTTP 200 consumed the old rotating refresh token. Every later failure is terminal locally.
+        async {
+            let token: TokenResponse =
+                serde_json::from_slice(&body.bytes).context("Invalid OAuth refresh response")?;
+            if let Err(error) = token.validate_required() {
+                revoke_rejected_token(client, &self.issued_client_id, &token).await;
+                return Err(error);
+            }
+            let claims = validate_id_token(
+                client,
+                token.id_token.as_deref().unwrap_or_default(),
+                &self.issued_client_id,
+                None,
+                Some(&self.subject),
+            )
+            .await;
+            let claims = match claims {
+                Ok(claims) => claims,
+                Err(error) => {
+                    revoke_rejected_token(client, &self.issued_client_id, &token).await;
+                    return Err(error);
+                }
+            };
+            let subject = claims.sub;
+            if subject != self.subject {
+                bail!("OAuth account changed during refresh")
+            }
+            Ok(Self {
+                account_id: account_key(&self.issued_client_id, &subject),
+                display_name: safe_metadata(claims.name).or_else(|| self.display_name.clone()),
+                email: safe_metadata(claims.email).or_else(|| self.email.clone()),
+                issued_client_id: self.issued_client_id.clone(),
+                subscopes: token
+                    .scope
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect(),
+                subject,
+                tokens: token.bundle()?,
+            })
         }
-        if token.id_token.as_deref().unwrap_or_default().is_empty() {
-            token.id_token = Some(self.tokens.id_token().to_owned());
-        }
-        let token = token.required()?;
-        let claims = validate_id_token(
-            client,
-            token.id_token.as_deref().unwrap_or_default(),
-            &self.issued_client_id,
-            None,
-            Some(&self.subject),
-        )
-        .await?;
-        let subject = claims.sub;
-        if subject != self.subject {
-            bail!("OAuth account changed during refresh")
-        }
-        Ok(Self {
-            account_id: account_key(&self.issued_client_id, &subject),
-            display_name: safe_metadata(claims.name).or_else(|| self.display_name.clone()),
-            email: safe_metadata(claims.email).or_else(|| self.email.clone()),
-            issued_client_id: self.issued_client_id.clone(),
-            subscopes: token
-                .scope
-                .as_deref()
-                .unwrap_or_default()
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
-            subject,
-            tokens: token.bundle()?,
-        })
+        .await
+        .context(RefreshRequiresSignIn)
     }
 
     pub async fn revoke(&self, client: &Client) -> Result<()> {
@@ -387,6 +416,51 @@ impl AuthGrant {
     }
 }
 
+#[derive(Debug)]
+struct RefreshRequiresSignIn;
+impl std::fmt::Display for RefreshRequiresSignIn {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("The ChatGPT session cannot be renewed. Sign in again")
+    }
+}
+impl std::error::Error for RefreshRequiresSignIn {}
+
+pub fn refresh_requires_sign_in(error: &anyhow::Error) -> bool {
+    error.is::<RefreshRequiresSignIn>()
+}
+
+fn refresh_response_error(status: StatusCode, bytes: &[u8]) -> anyhow::Error {
+    let error = anyhow::anyhow!("OAuth refresh failed ({})", status.as_u16());
+    // Only structured documented codes are actionable; server text is never a credential signal.
+    if !status.is_client_error() || status == StatusCode::TOO_MANY_REQUESTS {
+        return error;
+    }
+    let body: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(body) => body,
+        Err(_) => return error,
+    };
+    let code = body
+        .get("error")
+        .and_then(|value| value.as_str().or_else(|| value.get("code")?.as_str()));
+    if matches!(
+        code,
+        Some(
+            "invalid_grant"
+                | "invalid_refresh_token"
+                | "token_expired"
+                | "refresh_token_expired"
+                | "refresh_token_invalidated"
+                | "refresh_token_reused"
+        )
+    ) {
+        error.context(RefreshRequiresSignIn)
+    } else if code == Some("invalid_client") {
+        error.context("The ChatGPT client configuration was rejected")
+    } else {
+        error
+    }
+}
+
 pub fn account_key(client_id: &str, subject: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(client_id.as_bytes());
@@ -396,8 +470,9 @@ pub fn account_key(client_id: &str, subject: &str) -> String {
 }
 
 fn validate_grant(grant: &AuthGrant) -> Result<()> {
-    if grant.issued_client_id != CLIENT_ID
-        || grant.subject.is_empty()
+    validate_client_id(&grant.issued_client_id)?;
+    validate_scopes(&grant.subscopes)?;
+    if grant.subject.is_empty()
         || grant.account_id != account_key(&grant.issued_client_id, &grant.subject)
         || grant.tokens.refresh_token.is_empty()
     {
@@ -420,6 +495,43 @@ fn validate_grant(grant: &AuthGrant) -> Result<()> {
         bail!("Invalid stored OAuth grant")
     }
     Ok(())
+}
+
+fn validate_client_id(client_id: &str) -> Result<()> {
+    // Issued IDs are opaque; validate transport-safe syntax without inventing a prefix requirement.
+    if client_id.is_empty()
+        || client_id == DYNAMIC_CLIENT
+        || client_id.len() > 256
+        || !client_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        bail!("Invalid issued client identifier")
+    }
+    Ok(())
+}
+
+fn validate_scopes(scopes: &[String]) -> Result<()> {
+    if scopes.is_empty()
+        || scopes.len() > 64
+        || scopes.iter().any(|scope| {
+            scope.is_empty()
+                || scope.len() > 256
+                || scope.chars().any(|c| c.is_control() || c.is_whitespace())
+        })
+    {
+        bail!("Invalid OAuth granted scopes")
+    }
+    Ok(())
+}
+
+fn refresh_form(grant: &AuthGrant) -> [(&str, &str); 4] {
+    [
+        ("grant_type", "refresh_token"),
+        ("client_id", grant.issued_client_id.as_str()),
+        ("refresh_token", grant.tokens.refresh_token()),
+        ("resource", RESOURCE),
+    ]
 }
 
 #[derive(Serialize, Deserialize)]
@@ -530,11 +642,18 @@ fn parse_callback(
     }
     let code = values
         .remove("code")
-        .filter(|v| !v.is_empty() && v.len() <= 4096)
+        .filter(|v| !v.is_empty() && v.len() <= 4096 && !v.chars().any(char::is_control))
         .ok_or_else(|| anyhow::anyhow!("Missing authorization code"))?;
     let client_id = values.remove("client_id");
-    if client_id.as_deref().is_some_and(|id| id != pending_client) {
-        bail!("OAuth client mismatch")
+    if pending_client == DYNAMIC_CLIENT {
+        validate_client_id(client_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("Registration did not return an issued client identifier")
+        })?)?;
+    } else {
+        validate_client_id(pending_client)?;
+        if client_id.as_deref().is_some_and(|id| id != pending_client) {
+            bail!("OAuth client mismatch")
+        }
     }
     Ok(Callback { code, client_id })
 }
@@ -634,7 +753,7 @@ impl Drop for TokenResponse {
 }
 
 impl TokenResponse {
-    fn required(self) -> Result<Self> {
+    fn validate_required(&self) -> Result<()> {
         if self.access_token.as_deref().unwrap_or_default().is_empty()
             || self.refresh_token.as_deref().unwrap_or_default().is_empty()
             || self.id_token.as_deref().unwrap_or_default().is_empty()
@@ -653,11 +772,22 @@ impl TokenResponse {
             .iter()
             .flatten()
             .any(|token| token.len() > 16 * 1024 || token.chars().any(char::is_control))
-            || self.scope.as_ref().is_some_and(|scope| scope.len() > 4096)
+            || self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.len() > 4096 || scope.chars().any(char::is_control))
         {
             bail!("Invalid OAuth token response")
         }
-        Ok(self)
+        let scopes = self
+            .scope
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        validate_scopes(&scopes)?;
+        Ok(())
     }
     fn bundle(&self) -> Result<OpaqueTokenBundle> {
         let expires_at = match self.expires_in {
@@ -687,21 +817,33 @@ impl TokenResponse {
     }
 }
 
+async fn revoke_rejected_token(client: &Client, client_id: &str, token: &TokenResponse) {
+    let Some(refresh) = token.refresh_token.as_deref().filter(|value| {
+        !value.is_empty() && value.len() <= 16 * 1024 && !value.chars().any(char::is_control)
+    }) else {
+        return;
+    };
+    // A validated request issued this token set, but it must never become a usable local grant.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(10),
+        checked_response(
+            client.post(REVOKE).form(&[
+                ("token", refresh),
+                ("token_type_hint", "refresh_token"),
+                ("client_id", client_id),
+            ]),
+            REVOKE,
+        ),
+    )
+    .await;
+}
+
 fn now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 fn jwt_claims(token: &str) -> Option<serde_json::Value> {
     let payload = token.split('.').nth(1)?;
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?).ok()
-}
-
-pub fn chatgpt_account_id(access_token: &str) -> Option<String> {
-    jwt_claims(access_token)?
-        .get("https://api.openai.com/auth")?
-        .get("chatgpt_account_id")?
-        .as_str()
-        .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
-        .map(str::to_owned)
 }
 
 fn safe_metadata(value: Option<String>) -> Option<String> {
@@ -763,15 +905,27 @@ async fn validate_id_token(
         }
     }
     let claims = claims.ok_or_else(|| anyhow::anyhow!("ID token validation failed"))?;
-    if claims.exp as u64 <= now()?
+    validate_identity(&claims, nonce, subject, now()?)?;
+    Ok(claims)
+}
+
+fn validate_identity(
+    claims: &IdClaims,
+    nonce: Option<&str>,
+    subject: Option<&str>,
+    time: u64,
+) -> Result<()> {
+    if claims.exp as u64 <= time
         || claims.sub.is_empty()
+        || claims.sub.len() > 512
+        || claims.sub.chars().any(char::is_control)
         || claims.iss != ISSUER
         || nonce.is_some_and(|expected| claims.nonce.as_deref() != Some(expected))
         || subject.is_some_and(|expected| claims.sub != expected)
     {
         bail!("ID token identity mismatch")
     }
-    Ok(claims)
+    Ok(())
 }
 
 impl Drop for OpaqueTokenBundle {
@@ -783,29 +937,27 @@ impl Drop for OpaqueTokenBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    static CALLBACK_PORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
     #[test]
     fn token_rotation_requires_a_replacement_refresh_token() {
         let complete = br#"{"access_token":"access","refresh_token":"replacement","id_token":"identity","token_type":"Bearer","expires_in":3600,"scope":"chatgpt.tokens.use.direct"}"#;
         let token: TokenResponse = serde_json::from_slice(complete).unwrap();
-        assert!(token.required().is_ok());
+        assert!(token.validate_required().is_ok());
         let incomplete = br#"{"access_token":"access","id_token":"identity","token_type":"Bearer","expires_in":3600,"scope":"chatgpt.tokens.use.direct"}"#;
         let token: TokenResponse = serde_json::from_slice(incomplete).unwrap();
-        assert!(token.required().is_err());
+        assert!(token.validate_required().is_err());
     }
 
     #[test]
     fn pkce_and_url_are_safe() {
-        let _port = CALLBACK_PORT.lock().unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let attempt = runtime
             .block_on(AuthAttempt::prepare("urn:uuid:test"))
             .unwrap();
         let url = Url::parse(attempt.authorization_url()).unwrap();
-        assert_eq!(url.path(), "/oauth/authorize");
+        assert_eq!(url.path(), "/api/accounts/authorize");
         assert_eq!(
             url.query_pairs().find(|(k, _)| k == "client_id").unwrap().1,
-            CLIENT_ID
+            DYNAMIC_CLIENT
         );
         assert!(url
             .query_pairs()
@@ -814,13 +966,13 @@ mod tests {
 
     #[test]
     fn cancellation_before_callback_never_reaches_token_exchange() {
-        let _port = CALLBACK_PORT.lock().unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (cancel, receiver) = tokio::sync::oneshot::channel();
         let (attempt, client) = runtime.block_on(async {
-            let attempt = AuthAttempt::prepare_for_client("urn:uuid:test", CLIENT_ID, None, None)
-                .await
-                .unwrap();
+            let attempt =
+                AuthAttempt::prepare_for_client("urn:uuid:test", "oaiapp_saved", None, None)
+                    .await
+                    .unwrap();
             (attempt, Client::new())
         });
         cancel.send(()).unwrap();
@@ -843,31 +995,202 @@ mod tests {
             &request("state=bad&code=x&client_id=issued"),
             "http://127.0.0.1:9/auth/callback",
             "good",
-            CLIENT_ID
+            DYNAMIC_CLIENT
         )
         .is_err());
         assert!(parse_callback(
             &request("state=good&error=access_denied"),
             "http://127.0.0.1:9/auth/callback",
             "good",
-            CLIENT_ID
+            DYNAMIC_CLIENT
         )
         .is_err());
         assert!(parse_callback(
             &request("state=good&code=x"),
             "http://127.0.0.1:9/auth/callback",
             "good",
-            CLIENT_ID
+            DYNAMIC_CLIENT
         )
-        .is_ok());
+        .is_err());
         assert!(parse_callback(
             &request("state=good&code=x&client_id=issued"),
             "http://127.0.0.1:9/auth/callback",
             "good",
-            CLIENT_ID
+            DYNAMIC_CLIENT
+        )
+        .is_ok());
+    }
+    #[test]
+    fn returning_authorization_keeps_host_and_fresh_security_values() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (initial, returning) = runtime.block_on(async {
+            (
+                AuthAttempt::prepare("urn:uuid:host").await.unwrap(),
+                AuthAttempt::prepare_for_account(
+                    "urn:uuid:host",
+                    "oaiapp_saved",
+                    "subject",
+                    Some("old.identity.hint"),
+                    Some("user@example.com"),
+                )
+                .await
+                .unwrap(),
+            )
+        });
+        let initial_url = Url::parse(initial.authorization_url()).unwrap();
+        let url = Url::parse(returning.authorization_url()).unwrap();
+        let values: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(values["client_id"], "oaiapp_saved");
+        assert_eq!(values["ext_agent_host_id"], "urn:uuid:host");
+        assert_eq!(values["resource"], RESOURCE);
+        assert_eq!(values["scope"], SCOPES);
+        assert_eq!(values["id_token_hint"], "old.identity.hint");
+        assert!(!values.contains_key("agent_name_hint"));
+        assert!(initial_url
+            .query_pairs()
+            .any(|(k, v)| k == "agent_name_hint" && v == "Harness"));
+        let redirect = Url::parse(&values["redirect_uri"]).unwrap();
+        assert_eq!(redirect.host_str(), Some("127.0.0.1"));
+        assert_ne!(initial.redirect_uri, returning.redirect_uri);
+        assert_ne!(initial.state.as_str(), returning.state.as_str());
+        assert_ne!(initial.nonce.as_str(), returning.nonce.as_str());
+        assert_eq!(values["nonce"], returning.nonce.as_str());
+        assert_eq!(
+            values["code_challenge"],
+            URL_SAFE_NO_PAD.encode(Sha256::digest(returning.verifier.as_bytes()))
+        );
+    }
+
+    #[test]
+    fn identity_permission_and_rotation_are_not_reused() {
+        let claims = IdClaims {
+            iss: ISSUER.into(),
+            sub: "subject".into(),
+            exp: 200,
+            nonce: Some("fresh".into()),
+            name: None,
+            email: None,
+        };
+        assert!(validate_identity(&claims, Some("fresh"), Some("subject"), 100).is_ok());
+        assert!(validate_identity(&claims, Some("different"), None, 100).is_err());
+        assert!(validate_identity(&claims, None, Some("different"), 100).is_err());
+        assert!(validate_identity(&claims, None, None, 200).is_err());
+        for scope in ["", "chatgpt.tokens.use.direct\u{0000}"] {
+            let token: TokenResponse = serde_json::from_value(serde_json::json!({"access_token":"access", "refresh_token":"refresh", "id_token":"identity", "scope":scope})).unwrap();
+            assert!(token.validate_required().is_err());
+        }
+        let missing_id: TokenResponse = serde_json::from_value(serde_json::json!({"access_token":"access", "refresh_token":"replacement", "scope":"chatgpt.tokens.use.direct"})).unwrap();
+        assert!(missing_id.validate_required().is_err());
+        let identity_only: TokenResponse = serde_json::from_value(serde_json::json!({"access_token":"access", "refresh_token":"refresh", "id_token":"identity", "scope":"openid profile email offline_access"})).unwrap();
+        assert!(identity_only.validate_required().is_ok());
+        let mut grant = AuthGrant {
+            account_id: account_key("oaiapp_saved", "subject"),
+            display_name: None,
+            email: None,
+            issued_client_id: "oaiapp_saved".into(),
+            subscopes: vec!["chatgpt.tokens.use.direct".into()],
+            subject: "subject".into(),
+            tokens: OpaqueTokenBundle {
+                access_token: Zeroizing::new("access".into()),
+                refresh_token: Zeroizing::new("refresh".into()),
+                id_token: Zeroizing::new("id".into()),
+                expires_at: 200,
+            },
+        };
+        assert!(validate_grant(&grant).is_ok());
+        assert!(grant.plan_usage_enabled());
+        grant.subscopes = vec!["openid".into(), "profile".into(), "offline_access".into()];
+        assert!(validate_grant(&grant).is_ok());
+        assert!(!grant.plan_usage_enabled());
+        let saved = grant.to_vault_bytes().unwrap();
+        let restored = AuthGrant::from_vault_bytes(&saved).unwrap();
+        assert!(!restored.plan_usage_enabled());
+        let form: HashMap<_, _> = refresh_form(&grant).into_iter().collect();
+        assert_eq!(form["resource"], RESOURCE);
+        assert!(!form.contains_key("scope"));
+        for invalid in [DYNAMIC_CLIENT, "", "insecure id", "bad\r\nheader"] {
+            assert!(validate_client_id(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn returning_callback_rejects_changed_registration_and_duplicates() {
+        let request = |query: &str| {
+            format!("GET /auth/callback?{query} HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n").into_bytes()
+        };
+        let redirect = "http://127.0.0.1:9/auth/callback";
+        assert!(parse_callback(
+            &request("state=good&code=x"),
+            redirect,
+            "good",
+            "oaiapp_saved"
+        )
+        .is_ok());
+        for query in [
+            "state=good&code=x&client_id=other",
+            "state=good&code=x&client_id=dynamic_agent_client",
+            "state=good&state=good&code=x",
+        ] {
+            assert!(parse_callback(&request(query), redirect, "good", "oaiapp_saved").is_err());
+        }
+        assert!(parse_callback(
+            &request("state=good&code=x&client_id=dynamic_agent_client"),
+            redirect,
+            "good",
+            DYNAMIC_CLIENT
         )
         .is_err());
     }
+
+    #[test]
+    fn refresh_recovery_distinguishes_unusable_tokens_from_temporary_errors() {
+        for code in [
+            "invalid_grant",
+            "invalid_refresh_token",
+            "token_expired",
+            "refresh_token_expired",
+            "refresh_token_invalidated",
+            "refresh_token_reused",
+        ] {
+            for body in [
+                serde_json::json!({"error":code}),
+                serde_json::json!({"error":{"code":code}}),
+            ] {
+                let bytes = serde_json::to_vec(&body).unwrap();
+                assert!(refresh_requires_sign_in(&refresh_response_error(
+                    StatusCode::BAD_REQUEST,
+                    &bytes
+                )));
+                for status in [
+                    StatusCode::TOO_MANY_REQUESTS,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                ] {
+                    assert!(!refresh_requires_sign_in(&refresh_response_error(
+                        status, &bytes
+                    )));
+                }
+            }
+        }
+        for body in [
+            br#"{"error":"invalid_client"}"#.as_slice(),
+            br#"{"detail":"refresh_token_expired"}"#,
+            b"invalid_grant",
+            br#"{"error":"unknown"}"#,
+        ] {
+            assert!(!refresh_requires_sign_in(&refresh_response_error(
+                StatusCode::BAD_REQUEST,
+                body
+            )));
+        }
+        assert!(!refresh_requires_sign_in(&anyhow::anyhow!(
+            "Network unavailable"
+        )));
+        let consumed = anyhow::anyhow!("Invalid rotated response")
+            .context(RefreshRequiresSignIn)
+            .context("Outer request context");
+        assert!(refresh_requires_sign_in(&consumed));
+    }
+
     #[test]
     fn account_key_never_uses_email() {
         assert_ne!(

@@ -53,7 +53,8 @@ pub struct CompileInput {
     pub include_microphone: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Omission {
     Transcript { count: usize },
     Evidence { count: usize },
@@ -61,7 +62,12 @@ pub enum Omission {
     Microphone { count: usize },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Truncation {
     Transcript {
         id: String,
@@ -76,7 +82,8 @@ pub enum Truncation {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompileMetadata {
     pub model: String,
     pub input_token_budget: usize,

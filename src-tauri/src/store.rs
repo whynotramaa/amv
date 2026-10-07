@@ -3,7 +3,9 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::Duration};
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
+const MAX_CONTEXT_REQUEST: usize = 2 * 1024 * 1024;
+const MAX_CONTEXT_METADATA: usize = 1024 * 1024;
 const MAX_DOCUMENT_TEXT: usize = 256 * 1024;
 const MAX_DOCUMENT_CHUNK: usize = 4096;
 const MAX_MEMORY_BODY: usize = 16 * 1024;
@@ -22,6 +24,7 @@ const MAX_REQUEST_TEXT: usize = 64 * 1024;
 const MAX_ANSWER: usize = 256 * 1024;
 const MAX_HISTORY_BYTES: usize = 64 * 1024;
 const MAX_REQUEST_ID_TEXT: usize = 200;
+const MAX_REQUEST_ERROR: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -242,6 +245,19 @@ pub struct RequestUsage {
     pub total_tokens: Option<i64>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSnapshot {
+    pub id: i64,
+    pub request_id: i64,
+    pub provider: String,
+    pub model: String,
+    pub created_at: i64,
+    pub request: serde_json::Value,
+    pub metadata: serde_json::Value,
+    pub upstream_omitted: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingRequest {
@@ -326,7 +342,25 @@ pub struct Settings {
     pub custom_instruction: String,
     pub overlay_shortcut: String,
     pub send_shortcut: String,
+    #[serde(default = "default_new_chat_shortcut")]
+    pub new_chat_shortcut: String,
     pub launch_on_login: bool,
+    #[serde(default = "default_true")]
+    pub include_microphone: bool,
+    #[serde(default = "default_auto_send_delay")]
+    pub auto_send_delay_ms: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_new_chat_shortcut() -> String {
+    "Ctrl+Alt+N".into()
+}
+
+fn default_auto_send_delay() -> u32 {
+    2000
 }
 
 impl Default for Settings {
@@ -337,7 +371,10 @@ impl Default for Settings {
             custom_instruction: String::new(),
             overlay_shortcut: "Ctrl+Space".into(),
             send_shortcut: "Ctrl+Shift+Enter".into(),
+            new_chat_shortcut: default_new_chat_shortcut(),
             launch_on_login: false,
+            include_microphone: true,
+            auto_send_delay_ms: default_auto_send_delay(),
         }
     }
 }
@@ -346,6 +383,9 @@ impl Settings {
     pub fn validate(&self) -> Result<()> {
         if !matches!(self.send_mode.as_str(), "on_hotkey" | "automatic") {
             bail!("Send mode must be on_hotkey or automatic");
+        }
+        if !(500..=30_000).contains(&self.auto_send_delay_ms) {
+            bail!("Auto-send delay must be between 0.5 and 30 seconds");
         }
         if !matches!(
             self.response_mode.as_str(),
@@ -372,6 +412,9 @@ impl Settings {
             .eq_ignore_ascii_case(self.send_shortcut.trim())
         {
             bail!("Overlay and send shortcuts must be different");
+        }
+        if self.new_chat_shortcut.trim().is_empty() || self.new_chat_shortcut.chars().count() > 100 {
+            bail!("New chat shortcut must be between 1 and 100 characters");
         }
         Ok(())
     }
@@ -432,6 +475,10 @@ impl Store {
             if version < 8 {
                 tx.execute_batch(include_str!("../migrations/008_documents.sql"))
                     .context("apply document migration")?;
+            }
+            if version < 9 {
+                tx.execute_batch(include_str!("../migrations/009_request_context.sql"))
+                    .context("apply request context migration")?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .context("set schema version")?;
@@ -1101,6 +1148,98 @@ impl Store {
         Ok(result)
     }
 
+    /// Append the semantic inputs prepared for one provider attempt, before networking.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_request_context(
+        &self,
+        request_id: i64,
+        provider: &str,
+        model: &str,
+        request_json: &str,
+        metadata_json: &str,
+        upstream_omitted: bool,
+    ) -> Result<ContextSnapshot> {
+        validate_id(request_id, "request")?;
+        if !matches!(provider, "chatgpt" | "gemini" | "deepseek") {
+            bail!("unsupported context provider");
+        }
+        validate_request_id_text(model, "model")?;
+        let request = bounded_context_json(request_json, MAX_CONTEXT_REQUEST)?;
+        let metadata = bounded_context_json(metadata_json, MAX_CONTEXT_METADATA)?;
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let inserted = tx.execute(
+            "INSERT INTO request_context (request_id, provider, model, request_json, metadata_json, upstream_omitted)
+             SELECT id, ?2, ?3, ?4, ?5, ?6 FROM message_requests WHERE id = ?1 AND status = 'inflight'",
+            params![request_id, provider, model, request_json, metadata_json, upstream_omitted],
+        )?;
+        if inserted != 1 {
+            bail!("request is not in flight");
+        }
+        let id = tx.last_insert_rowid();
+        let created_at = tx.query_row(
+            "SELECT created_at FROM request_context WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        tx.commit()?;
+        Ok(ContextSnapshot {
+            id,
+            request_id,
+            provider: provider.into(),
+            model: model.into(),
+            created_at,
+            request,
+            metadata,
+            upstream_omitted,
+        })
+    }
+
+    /// Read one attempt at a time; retries and fallback retain earlier prepared contexts.
+    pub fn request_context(
+        &self,
+        request_id: i64,
+        before_id: Option<i64>,
+    ) -> Result<Option<ContextSnapshot>> {
+        validate_id(request_id, "request")?;
+        if let Some(id) = before_id {
+            validate_id(id, "context cursor")?;
+        }
+        let mut statement = self.conn.prepare(
+            "SELECT id, request_id, provider, model, created_at, request_json, metadata_json, upstream_omitted
+             FROM request_context WHERE request_id = ?1 AND (?2 IS NULL OR id < ?2)
+             ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = statement.query(params![request_id, before_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        bounded_row_fields(
+            row,
+            &[
+                (2, 8),
+                (3, MAX_REQUEST_ID_TEXT),
+                (5, MAX_CONTEXT_REQUEST),
+                (6, MAX_CONTEXT_METADATA),
+            ],
+        )?;
+        let provider: String = row.get(2)?;
+        if !matches!(provider.as_str(), "chatgpt" | "gemini" | "deepseek") {
+            bail!("invalid stored context provider");
+        }
+        let model: String = row.get(3)?;
+        validate_request_id_text(&model, "model")?;
+        Ok(Some(ContextSnapshot {
+            id: row.get(0)?,
+            request_id: row.get(1)?,
+            provider,
+            model,
+            created_at: row.get(4)?,
+            request: bounded_context_json(row.get_ref(5)?.as_str()?, MAX_CONTEXT_REQUEST)?,
+            metadata: bounded_context_json(row.get_ref(6)?.as_str()?, MAX_CONTEXT_METADATA)?,
+            upstream_omitted: row.get(7)?,
+        }))
+    }
+
     pub fn complete_request(
         &mut self,
         request_id: i64,
@@ -1226,10 +1365,9 @@ impl Store {
         partial_text: Option<&str>,
     ) -> Result<()> {
         validate_id(request_id, "request")?;
-        if error_summary.len() > MAX_REQUEST_ID_TEXT || error_summary.chars().any(char::is_control)
-        {
+        if error_summary.len() > MAX_REQUEST_ERROR || error_summary.chars().any(char::is_control) {
             bail!(
-                "error summary must be at most {MAX_REQUEST_ID_TEXT} bytes and contain no controls"
+                "error summary must be at most {MAX_REQUEST_ERROR} bytes and contain no controls"
             );
         }
         if let Some(partial) = partial_text {
@@ -1832,7 +1970,7 @@ fn bounded_row_fields(row: &rusqlite::Row<'_>, fields: &[(usize, usize)]) -> Res
     for &(index, maximum) in fields {
         let value = row.get_ref(index)?;
         if !matches!(value, rusqlite::types::ValueRef::Null) && value.as_str()?.len() > maximum {
-            bail!("stored document field exceeds its bound");
+            bail!("stored field exceeds its bound");
         }
     }
     Ok(())
@@ -2006,6 +2144,13 @@ fn validate_answer_text(text: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
+fn bounded_context_json(text: &str, maximum: usize) -> Result<serde_json::Value> {
+    if text.len() > maximum {
+        bail!("prepared context JSON exceeds its byte limit");
+    }
+    serde_json::from_str(text).context("invalid prepared context JSON")
+}
+
 fn validate_request_id_text(text: &str, kind: &str) -> Result<()> {
     if text.is_empty() || text.len() > MAX_REQUEST_ID_TEXT || text.chars().any(char::is_control) {
         bail!("{kind} must be between 1 and {MAX_REQUEST_ID_TEXT} bytes and contain no controls");
@@ -2167,12 +2312,135 @@ mod tests {
     }
 
     #[test]
+    fn context_attempts_survive_retry_and_reopen_and_cascade_with_meeting() -> Result<()> {
+        let path = test_path("harness-context");
+        let result = (|| -> Result<()> {
+            // Schema 8 upgrade preserves requests and every earlier setting.
+            let mut store = Store::open(&path)?;
+            let meeting = store.create_meeting("context", 0, &Settings::default())?;
+            let pending = store.prepare_question_request(meeting.id, "new question")?;
+            store
+                .conn
+                .execute_batch("DROP TABLE request_context; PRAGMA user_version=8;")?;
+            drop(store);
+            let mut store = Store::open(&path)?;
+            assert!(store
+                .save_request_context(pending.id, "chatgpt", "model", "{}", "{}", false)
+                .is_err());
+            store.begin_request(pending.id)?;
+            let request = r#"{"developer":"quoted evidence","user":"new question"}"#;
+            let metadata = r#"{"sources":["memory 1"],"omittedHistory":2}"#;
+            let first = store
+                .save_request_context(pending.id, "chatgpt", "first", request, metadata, true)?;
+            let fallback = store
+                .save_request_context(pending.id, "gemini", "fallback", request, "{}", false)?;
+            assert!(fallback.id > first.id);
+            store.fail_request(pending.id, "retryable", None)?;
+            assert!(store
+                .save_request_context(pending.id, "deepseek", "model", "{}", "{}", false)
+                .is_err());
+            store.begin_request(pending.id)?;
+            let retry = store
+                .save_request_context(pending.id, "deepseek", "retry", request, "{}", false)?;
+            store.complete_request(pending.id, "answer", "deepseek", "retry", None)?;
+            assert!(store
+                .save_request_context(pending.id, "deepseek", "model", "{}", "{}", false)
+                .is_err());
+            drop(store);
+            let store = Store::open(&path)?;
+            assert_eq!(
+                store.request_context(pending.id, None)?.unwrap().id,
+                retry.id
+            );
+            assert_eq!(
+                store
+                    .request_context(pending.id, Some(retry.id))?
+                    .unwrap()
+                    .id,
+                fallback.id
+            );
+            let oldest = store
+                .request_context(pending.id, Some(fallback.id))?
+                .unwrap();
+            assert_eq!(oldest.id, first.id);
+            assert_eq!(
+                oldest.request,
+                serde_json::from_str::<serde_json::Value>(request)?
+            );
+            assert_eq!(
+                oldest.metadata,
+                serde_json::from_str::<serde_json::Value>(metadata)?
+            );
+            assert!(oldest.upstream_omitted);
+            assert!(store.request_context(pending.id, Some(first.id))?.is_none());
+            assert!(store.request_context(pending.id, Some(0)).is_err());
+            store
+                .conn
+                .execute("DELETE FROM meetings WHERE id=?1", [meeting.id])?;
+            assert!(store.request_context(pending.id, None)?.is_none());
+            Ok(())
+        })();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+        result
+    }
+
+    #[test]
+    fn context_admission_and_corrupt_row_reads_are_bounded() -> Result<()> {
+        let mut store = Store::open(":memory:")?;
+        let meeting = store.create_meeting("context bounds", 0, &Settings::default())?;
+        let pending = store.prepare_question_request(meeting.id, "question")?;
+        store.begin_request(pending.id)?;
+        for (provider, model, request, metadata) in [
+            ("unknown", "model", "{}".to_owned(), "{}".to_owned()),
+            ("chatgpt", "bad\nmodel", "{}".into(), "{}".into()),
+            ("chatgpt", "model", "not json".into(), "{}".into()),
+            ("chatgpt", "model", "{}".into(), "not json".into()),
+            (
+                "chatgpt",
+                "model",
+                " ".repeat(MAX_CONTEXT_REQUEST + 1),
+                "{}".into(),
+            ),
+            (
+                "chatgpt",
+                "model",
+                "{}".into(),
+                " ".repeat(MAX_CONTEXT_METADATA + 1),
+            ),
+        ] {
+            assert!(store
+                .save_request_context(pending.id, provider, model, &request, &metadata, false)
+                .is_err());
+        }
+        assert!(store
+            .save_request_context(0, "chatgpt", "model", "{}", "{}", false)
+            .is_err());
+        assert!(store.request_context(pending.id, None)?.is_none());
+        let snapshot =
+            store.save_request_context(pending.id, "chatgpt", "model", "{}", "{}", false)?;
+        // Tampered SQLite values are checked while borrowed, before JSON/string allocation.
+        store.conn.execute(
+            "UPDATE request_context SET request_json=?1 WHERE id=?2",
+            params![" ".repeat(MAX_CONTEXT_REQUEST + 1), snapshot.id],
+        )?;
+        assert!(store.request_context(pending.id, None).is_err());
+        store.conn.execute(
+            "UPDATE request_context SET request_json='broken' WHERE id=?1",
+            [snapshot.id],
+        )?;
+        assert!(store.request_context(pending.id, None).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn documents_upgrade_reindex_sharing_utf8_and_deletion() -> Result<()> {
         let path = test_path("harness-documents");
         let result = (|| -> Result<()> {
             let old = Store::open(&path)?;
             let settings = old.settings()?;
-            old.conn.execute_batch("DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; PRAGMA user_version=7;")?;
+            old.conn.execute_batch("DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; PRAGMA user_version=7;")?;
             drop(old);
             let store = Store::open(&path)?;
             assert_eq!(store.settings()?, settings);
@@ -2180,7 +2448,7 @@ mod tests {
                 store
                     .conn
                     .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
-                8
+                SCHEMA_VERSION
             );
             let mut input = DocumentInput {
                 title: " Budget OR review ".into(),
@@ -2316,7 +2584,7 @@ mod tests {
         let result = (|| -> Result<()> {
             // Exercise the actual previous-schema upgrade without changing other data.
             let old = Store::open(&path)?;
-            old.conn.execute_batch("DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; PRAGMA user_version=6;")?;
+            old.conn.execute_batch("DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; PRAGMA user_version=6;")?;
             let settings = old.settings()?;
             drop(old);
             let store = Store::open(&path)?;

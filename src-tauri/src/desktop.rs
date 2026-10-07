@@ -72,6 +72,7 @@ struct ResponseController {
     manual_through: Option<(i64, i64)>,
     auto_meeting: Option<i64>,
     auto_paused: bool,
+    auto_ticket: u64,
     shutting_down: bool,
 }
 
@@ -107,6 +108,7 @@ struct AccountState {
     #[serde(flatten)]
     metadata: crate::store::AccountMetadata,
     signed_in: bool,
+    plan_usage_enabled: bool,
 }
 
 fn account_slot(id: &str) -> String {
@@ -295,6 +297,15 @@ fn request_compile(
 
 type SelectedAccount = (String, String);
 
+fn account_plan_enabled(core: &Core, id: &str) -> bool {
+    core.credentials
+        .get(&account_slot(id))
+        .ok()
+        .flatten()
+        .and_then(|bytes| crate::auth::AuthGrant::from_vault_bytes(&bytes).ok())
+        .is_some_and(|grant| grant.account_id == id && grant.plan_usage_enabled())
+}
+
 fn provider_snapshots(
     core: &Core,
 ) -> Result<(Option<SelectedAccount>, Vec<ProviderSnapshot>), String> {
@@ -308,7 +319,7 @@ fn provider_snapshots(
             .accounts()
             .map_err(|_| "Couldn't read accounts")?
             .into_iter()
-            .find(|account| account.account_id == id)
+            .find(|account| account.account_id == id && account_plan_enabled(core, &id))
             .and_then(|account| account.selected_model.map(|model| (id, model))),
         None => None,
     };
@@ -482,10 +493,27 @@ fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
 // Called only after a finalized SYSTEM row has been committed. No polling or audio upload.
 pub(crate) fn speech_finalized(app: &tauri::AppHandle, meeting_id: i64) {
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = dispatch_response(&app, meeting_id, None, false, true, None) {
-            let _ = app.emit("app-notice", error);
+    tauri::async_runtime::spawn(async move {
+        let (response, delay) = {
+            let state = app.state::<Mutex<Core>>();
+            let Ok(core) = state.lock() else { return };
+            (core.response.clone(), core.settings.auto_send_delay_ms)
+        };
+        let mine = {
+            let Ok(mut response) = response.lock() else { return };
+            response.auto_ticket = response.auto_ticket.wrapping_add(1);
+            response.auto_ticket
+        };
+        tokio::time::sleep(Duration::from_millis(delay.into())).await;
+        if response.lock().map(|r| r.auto_ticket != mine).unwrap_or(true) {
+            return;
         }
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            if let Err(error) = dispatch_response(&app, meeting_id, None, false, true, None) {
+                let _ = app.emit("app-notice", error);
+            }
+        })
+        .await;
     });
 }
 
@@ -563,6 +591,7 @@ fn dispatch_response(
         .meeting(meeting_id)
         .map_err(|_| "Couldn't read meeting settings")?
         .settings_snapshot;
+    let include_microphone = include_microphone || settings_snapshot.include_microphone;
     let batch_bytes = speech_batch_bytes(&settings_snapshot);
     let mut question_context = None;
     let pending = match (existing, question) {
@@ -691,7 +720,7 @@ fn dispatch_response(
                 targets.push(Target {
                     provider: "chatgpt".into(),
                     model,
-                    endpoint: url::Url::parse("https://chatgpt.com/backend-api/codex/responses")
+                    endpoint: url::Url::parse("https://api.openai.com/v1/responses")
                         .map_err(|_| "Invalid inference endpoint")?,
                     api: WireApi::Chatgpt,
                     bearer: token,
@@ -826,6 +855,7 @@ fn get_connections(state: tauri::State<'_, Mutex<Core>>) -> Result<ConnectionSta
         .map_err(|_| "Couldn't read accounts")?
         .into_iter()
         .map(|metadata| AccountState {
+            plan_usage_enabled: account_plan_enabled(&core, &metadata.account_id),
             signed_in: core
                 .credentials
                 .get(&account_slot(&metadata.account_id))
@@ -891,16 +921,45 @@ async fn chatgpt_access_token(
     if grant.account_id != account_id {
         return Err("Account credentials don't match".into());
     }
+    if !grant.plan_usage_enabled() {
+        return Err(
+            "ChatGPT plan usage is disabled. Enable it in ChatGPT Settings and sign in again."
+                .into(),
+        );
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "System clock is invalid")?
         .as_secs();
     if token_needs_refresh(grant.tokens().expires_at(), now) {
         // earliest_refresh_at is not used: its type and semantics are not established here.
-        let refreshed = grant
-            .refresh(&client)
-            .await
-            .map_err(|_| "ChatGPT session expired. Sign in again.")?;
+        let refreshed = match grant.refresh(&client).await {
+            Ok(grant) => grant,
+            Err(error) if crate::auth::refresh_requires_sign_in(&error) => {
+                let cleared = (|| -> Result<(), String> {
+                    let state = app.state::<Mutex<Core>>();
+                    let core = state.lock().map_err(|_| "Connections are unavailable")?;
+                    if core.login_generation != generation {
+                        return Err("ChatGPT session changed. Try again".into());
+                    }
+                    core.credentials
+                        .delete(&account_slot(account_id))
+                        .map_err(|_| {
+                            "Couldn't clear expired credentials. Sign out and sign in again"
+                        })?;
+                    core.store
+                        .clear_active_if_matching(account_id)
+                        .map_err(|_| "Couldn't clear expired account selection")?;
+                    Ok(())
+                })();
+                let _ = app.emit("connections-changed", ());
+                cleared?;
+                return Err("ChatGPT session expired. Sign in again.".into());
+            }
+            Err(_) => {
+                return Err("ChatGPT refresh is temporarily unavailable. Try again later.".into())
+            }
+        };
         let saved = (|| -> Result<(), String> {
             let state = app.state::<Mutex<Core>>();
             let core = state.lock().map_err(|_| "Connections are unavailable")?;
@@ -923,6 +982,13 @@ async fn chatgpt_access_token(
             let _ = revoke_bounded(&refreshed, &client).await;
             let _ = app.emit("connections-changed", ());
             return Err(error);
+        }
+        if !refreshed.plan_usage_enabled() {
+            let _ = app.emit("connections-changed", ());
+            return Err(
+                "ChatGPT plan usage is disabled. Enable it in ChatGPT Settings and sign in again."
+                    .into(),
+            );
         }
         return Ok(zeroize::Zeroizing::new(
             refreshed.tokens().access_token().to_owned(),
@@ -948,8 +1014,7 @@ async fn discover_chatgpt_models(
         .clone();
     let models = crate::providers::discover_models(
         &client,
-        url::Url::parse("https://chatgpt.com/backend-api/codex/models?client_version=0.160.1")
-            .unwrap(),
+        url::Url::parse("https://api.openai.com/v1/models").unwrap(),
         &token,
         true,
     )
@@ -1685,6 +1750,22 @@ fn index_local_document(
 }
 
 #[tauri::command]
+async fn request_context(
+    app: tauri::AppHandle,
+    request_id: i64,
+    before_id: Option<i64>,
+) -> Result<Option<crate::store::ContextSnapshot>, String> {
+    let (path, work) = local_work(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _work = work;
+        Store::open(path)?.request_context(request_id, before_id)
+    })
+    .await
+    .map_err(|_| "Context lookup stopped unexpectedly".to_string())?
+    .map_err(|_| "Could not read saved request context".to_string())
+}
+
+#[tauri::command]
 async fn open_documents(app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         show_management(&app, "documents", "documents", "Harness · Local documents")
@@ -2240,25 +2321,27 @@ fn get_app_state(state: tauri::State<'_, Mutex<Core>>) -> Result<AppState, Strin
     })
 }
 
-fn shortcuts(settings: &Settings) -> Result<[Shortcut; 2], String> {
+fn shortcuts(settings: &Settings) -> Result<[Shortcut; 3], String> {
     let overlay = Shortcut::from_str(settings.overlay_shortcut.trim())
         .map_err(|_| "The assistant shortcut is invalid. Try Ctrl+Space.".to_string())?;
     let send = Shortcut::from_str(settings.send_shortcut.trim())
         .map_err(|_| "The send shortcut is invalid. Try Ctrl+Shift+Enter.".to_string())?;
-    if overlay == send {
-        return Err("Choose different shortcuts for the assistant and sending speech.".into());
+    let new_chat = Shortcut::from_str(settings.new_chat_shortcut.trim())
+        .map_err(|_| "The new chat shortcut is invalid. Try Ctrl+Alt+N.".to_string())?;
+    if overlay == send || overlay == new_chat || send == new_chat {
+        return Err("Choose a different shortcut for each action.".into());
     }
-    Ok([overlay, send])
+    Ok([overlay, send, new_chat])
 }
 
 fn register_shortcuts(app: &tauri::AppHandle, settings: &Settings) -> Result<(), String> {
-    let pair = shortcuts(settings)?;
+    let keys = shortcuts(settings)?;
     app.global_shortcut()
         .unregister_all()
         .map_err(|e| e.to_string())?;
-    app.global_shortcut().register_multiple(pair).map_err(|_| {
+    app.global_shortcut().register_multiple(keys).map_err(|_| {
         let _ = app.global_shortcut().unregister_all();
-        "A shortcut is already in use. Try Ctrl+Shift+Space for the assistant and another send shortcut.".to_string()
+        "A shortcut is already in use. Pick different shortcuts in settings.".to_string()
     })
 }
 
@@ -2318,6 +2401,51 @@ fn save_settings(
     core.shortcut_error = None;
     log::info!("component=settings action=saved");
     Ok(settings)
+}
+
+#[tauri::command]
+async fn new_chat(app: tauri::AppHandle) -> Result<crate::meeting::MeetingState, String> {
+    let (meeting, response) = {
+        let state = app.state::<Mutex<Core>>();
+        let core = state.lock().map_err(|_| "Chat is unavailable")?;
+        (core.meeting.clone(), core.response.clone())
+    };
+    let done = {
+        let mut response = response.lock().map_err(|_| "Response state is unavailable")?;
+        response.auto_meeting = None;
+        response.manual_through = None;
+        if let Some(cancel) = response.cancel.take() {
+            let _ = cancel.send(());
+        }
+        response.done.clone()
+    };
+    let stopped = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut notified = Box::pin(done.notified());
+            notified.as_mut().enable();
+            if !response.lock().map(|r| r.running).unwrap_or(false) {
+                break;
+            }
+            notified.await;
+        }
+    })
+    .await;
+    if stopped.is_err() {
+        return Err("The current response didn't stop. Try again.".into());
+    }
+    let stop_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        meeting
+            .lock()
+            .map_err(|_| "Meeting state is unavailable".to_string())?
+            .stop_and_wait(&stop_app)
+    })
+    .await
+    .map_err(|_| "Couldn't stop the meeting")??;
+    let chat_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || start_chat(chat_app))
+        .await
+        .map_err(|_| "Couldn't start a new chat")?
 }
 
 #[tauri::command]
@@ -2446,7 +2574,15 @@ pub fn run() {
                         .map(|core| core.settings.clone());
                     if let Some(settings) = settings {
                         if let Ok(pair) = shortcuts(&settings) {
-                            if shortcut == &pair[0] {
+                            if shortcut == &pair[2] {
+                                report_window_error(show_overlay(app));
+                                let app = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    if let Err(error) = new_chat(app.clone()).await {
+                                        let _ = app.emit("app-notice", error);
+                                    }
+                                });
+                            } else if shortcut == &pair[0] {
                                 report_window_error(toggle_overlay(app));
                             } else if shortcut == &pair[1] {
                                 report_window_error(show_overlay(app));
@@ -2473,6 +2609,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             get_app_state,
+            new_chat,
             save_settings,
             get_connections,
             save_providers,
@@ -2491,6 +2628,7 @@ pub fn run() {
             get_meeting_state,
             audio_devices,
             open_documents,
+            request_context,
             close_documents,
             list_documents,
             import_document,
@@ -2560,6 +2698,7 @@ pub fn run() {
                     manual_through: None,
                     auto_meeting: None,
                     auto_paused: false,
+                    auto_ticket: 0,
                     shutting_down: false,
                 })),
             }));

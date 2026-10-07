@@ -86,7 +86,7 @@ export default function ResponseView({ response, onRetry }: { response: Response
   const failed = response.status === 'error' || response.status === 'cancelled';
   const heading = response.status === 'preparing' ? 'Preparing response' : response.status === 'streaming' ? 'Responding' : failed ? (response.status === 'cancelled' ? 'Response stopped' : 'Response failed') : response.status === 'partial' ? 'Partial response' : 'Response';
   return <section className={`response response-${response.status}`} aria-label="Meeting response" aria-busy={busy}>
-    <div className="response-heading"><span role="status">{heading}</span>{response.provider || response.model ? <span className="response-meta">{[response.provider, response.model].filter(Boolean).join(' · ')}</span> : null}</div>
+    {response.status !== 'completed' && <div className="response-heading"><span role="status">{heading}</span></div>}
     {response.answer ? <div className="response-markdown"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} components={{
       a: ({ href, children }) => {
         const safe = safeHref(href);
@@ -101,8 +101,6 @@ export default function ResponseView({ response, onRetry }: { response: Response
     }}>{response.answer}</ReactMarkdown></div> : <p className="help">{busy ? 'The answer will appear here.' : response.error || 'No answer was returned.'}</p>}
     {response.answer && response.error && <p className="notice error" role="alert">{response.error}</p>}
     {linkError && <p className="notice error" role="alert">{linkError}</p>}
-    {response.contextOmitted && <p className="response-note">Some earlier meeting context was omitted.</p>}
-    {response.usage && <p className="response-note">{[response.usage.inputTokens != null && `${response.usage.inputTokens} input tokens`, response.usage.outputTokens != null && `${response.usage.outputTokens} output tokens`, response.usage.totalTokens != null && `${response.usage.totalTokens} total tokens`].filter(Boolean).join(' · ')}</p>}
     {failed && onRetry && <Button quiet onClick={onRetry}>Retry response</Button>}
   </section>;
 }

@@ -100,21 +100,28 @@ where
     };
     on_state(state.clone());
 
-    let mut cancel = cancel;
-    if !matches!(cancel.try_recv(), Err(oneshot::error::TryRecvError::Empty)) {
-        store.cancel_request(pending.id)?;
-        state.status = DispatchStatus::Cancelled;
-        on_state(state.clone());
-        return Ok(DispatchResult {
-            request_id: pending.id,
-            state,
-        });
-    }
     let mut cancel = Some(Box::pin(cancel));
     let mut last_emit = None;
     let mut emitted_bytes = 0usize;
 
     for (target_index, target) in input.targets.iter().enumerate() {
+        if !matches!(
+            cancel
+                .as_mut()
+                .expect("live cancellation receiver")
+                .as_mut()
+                .get_mut()
+                .try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ) {
+            store.cancel_request(pending.id)?;
+            state.status = DispatchStatus::Cancelled;
+            on_state(state.clone());
+            return Ok(DispatchResult {
+                request_id: pending.id,
+                state,
+            });
+        }
         let compile_input = compile_input(&input.compile, &pending, &target.model)?;
         let compiled = match context::compile(compile_input, input.budget) {
             Ok(value) => value,
@@ -128,6 +135,31 @@ where
                 );
             }
         };
+        let snapshot = serde_json::to_string(&compiled.request)
+            .and_then(|request| {
+                serde_json::to_string(&compiled.metadata).map(|metadata| (request, metadata))
+            })
+            .map_err(anyhow::Error::from)
+            .and_then(|(request, metadata)| {
+                store.save_request_context(
+                    pending.id,
+                    &target.provider,
+                    &target.model,
+                    &request,
+                    &metadata,
+                    input.history_omitted,
+                )
+            });
+        if snapshot.is_err() {
+            return finish_error(
+                &mut store,
+                &pending,
+                state,
+                "Could not save request context; nothing was sent for this attempt".into(),
+                &mut on_state,
+            );
+        }
+        drop(snapshot);
         state.context_omitted = input.history_omitted || !compiled.metadata.omissions.is_empty();
         state.provider = Some(target.provider.clone());
         state.model = Some(target.model.clone());
@@ -273,7 +305,7 @@ where
                 } else {
                     DispatchStatus::Partial
                 };
-                let message = format!("inference {:?}", failure.kind);
+                let message = failure.to_string();
                 store.fail_request(pending.id, &message, None)?;
                 state.status = status;
                 state.error = Some(message);
@@ -440,7 +472,7 @@ mod tests {
             .unwrap();
         let make_input = || DispatchInput {
             targets: vec![Target {
-                provider: "test".into(),
+                provider: "deepseek".into(),
                 model: "model".into(),
                 endpoint: Url::parse("http://invalid.example/v1").unwrap(),
                 api: WireApi::ChatCompletions,
@@ -472,6 +504,7 @@ mod tests {
             .block_on(run(make_input(), receiver, |_| {}))
             .unwrap();
         assert_eq!(cancelled.state.status, DispatchStatus::Cancelled);
+        assert!(store.request_context(pending.id, None).unwrap().is_none());
         assert_eq!(
             store.pending_request(pending.id).unwrap().unwrap().status,
             crate::store::RequestStatus::Pending
@@ -484,6 +517,17 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(failed.state.status, DispatchStatus::Error);
+        let snapshot = store.request_context(pending.id, None).unwrap().unwrap();
+        assert_eq!(snapshot.provider, "deepseek");
+        assert_eq!(
+            snapshot.request["messages"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()["content"],
+            "question"
+        );
+        assert!(!serde_json::to_string(&snapshot).unwrap().contains("bearer"));
         assert_eq!(events.last(), Some(&DispatchStatus::Error));
         assert_eq!(
             store.pending_request(pending.id).unwrap().unwrap().id,

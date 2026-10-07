@@ -26,10 +26,8 @@ svg { width: var(--icon-size); height: var(--icon-size); flex: none; }
 .header:active { cursor: grabbing; }
 .view { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: var(--space-4); }
 .view > .response:first-child { border-top: 0; padding-top: 0; }
-.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.composer-bar { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
 .composer-actions { display: flex; align-items: center; gap: var(--space-1); }
-.mode-select { min-height: var(--control-compact); background: transparent; color: var(--text-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 0 var(--space-2); font-size: var(--font-size-sm); }
-.mode-select option { background: var(--surface-elevated); color: var(--text-primary); }
 .icon-button.mic.on { color: var(--success); background: var(--surface-active); }
 .settings-links { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 input[type='range'] { width: 100%; accent-color: var(--accent); }
@@ -171,3 +169,5 @@ textarea.input { resize: vertical; min-height: 104px; }
 .meeting-context > summary { cursor: pointer; min-height: var(--control-compact); color: var(--text-secondary); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
 .meeting-context[open] > summary { margin-bottom: var(--space-3); }
 .meeting-context .transcript p { overflow-wrap: anywhere; font-size: var(--font-size-sm); }
+.pending-speech { color: var(--text-secondary); font-size: var(--font-size-sm); }
+.pending-speech p { margin: 0 0 var(--space-1); }

@@ -21,7 +21,7 @@ impl ApiProvider {
 
 pub fn http_client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
-        .user_agent("codex_cli_rs/0.160.1")
+        .user_agent(concat!("Harness/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(90))
@@ -43,14 +43,10 @@ pub async fn discover_models(
 ) -> Result<Vec<ModelInfo>> {
     use futures_util::StreamExt;
     let request = async {
-        let mut request = client.get(endpoint).bearer_auth(bearer);
-        if chatgpt {
-            if let Some(account) = crate::auth::chatgpt_account_id(bearer) {
-                request = request
-                    .header("chatgpt-account-id", account)
-                    .header("originator", "codex_cli_rs");
-            }
+        if chatgpt && endpoint.as_str() != "https://api.openai.com/v1/models" {
+            bail!("Invalid ChatGPT model endpoint");
         }
+        let request = client.get(endpoint).bearer_auth(bearer);
         let response = request
             .send()
             .await

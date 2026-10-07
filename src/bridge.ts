@@ -7,7 +7,10 @@ export type Settings = {
   customInstruction: string;
   overlayShortcut: string;
   sendShortcut: string;
+  newChatShortcut: string;
   launchOnLogin: boolean;
+  includeMicrophone: boolean;
+  autoSendDelayMs: number;
 };
 
 export type AppState = {
@@ -31,7 +34,8 @@ export type MeetingState = {
 export const desktop = isTauri();
 export const defaults: Settings = {
   sendMode: 'on_hotkey', responseMode: 'suggested_answers', customInstruction: '',
-  overlayShortcut: 'Ctrl+Space', sendShortcut: 'Ctrl+Shift+Enter', launchOnLogin: false,
+  overlayShortcut: 'Ctrl+Space', sendShortcut: 'Ctrl+Shift+Enter', newChatShortcut: 'Ctrl+Alt+N', launchOnLogin: false,
+  includeMicrophone: true, autoSendDelayMs: 2000,
 };
 const previewKey = 'harness-interface-preview-settings';
 
@@ -74,7 +78,7 @@ export async function hideOverlay(): Promise<void> {
 export type ApiProvider = 'gemini' | 'deepseek';
 export type ProviderConfig = { provider: ApiProvider; baseUrl: string; model: string | null; allowFallback: boolean };
 export type ModelInfo = { id: string; name: string };
-export type AccountMetadata = { accountId: string; displayName: string | null; email: string | null; clientId: string; selectedModel: string | null; signedIn: boolean };
+export type AccountMetadata = { accountId: string; displayName: string | null; email: string | null; clientId: string; selectedModel: string | null; signedIn: boolean; planUsageEnabled?: boolean };
 export type ConnectionState = { providers: { config: ProviderConfig; keyConfigured: boolean }[]; accounts: AccountMetadata[]; activeAccount: string | null; signingIn: boolean };
 export async function loadConnections(): Promise<ConnectionState> {
   if (desktop) return invoke('get_connections');
@@ -156,3 +160,11 @@ export const checkDocument = (id: number): Promise<{ changed: boolean; missing: 
 export const searchDocuments = (query: string): Promise<DocumentChunk[]> => desktop ? invoke('search_documents', { query }) : Promise.resolve([]);
 export const closeDocuments = (): Promise<void> => invoke('close_documents');
 export async function openDocuments(): Promise<void> { if (desktop) await invoke('open_documents'); else window.open('?view=documents', 'harness-documents'); }
+
+export type ContextSnapshot = {
+  id: number; requestId: number; provider: string; model: string; createdAt: number; upstreamOmitted: boolean;
+  request: { model: string; instructions: string | null; messages: { role: string; content: string }[] };
+  metadata: { model: string; inputTokenBudget: number; responseReserveTokens: number; estimatedInputTokens: number;
+    omissions: { kind: string; count: number }[]; truncations: { kind: string; id?: string; source?: string; startMs?: number; role?: string }[]; excludedIds: string[] };
+};
+export const requestContext = (requestId: number, beforeId: number | null = null): Promise<ContextSnapshot | null> => desktop ? invoke('request_context', { requestId, beforeId }) : Promise.resolve(null);

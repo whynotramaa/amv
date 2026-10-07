@@ -1,0 +1,12 @@
+.context-inspector { display: grid; gap: var(--space-4); border-top: 1px solid var(--border-subtle); padding-top: var(--space-4); min-width: 0; }
+.context-heading, .context-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); }
+.context-heading { font-size: var(--font-size-sm); overflow-wrap: anywhere; }
+.context-actions { justify-content: flex-start; }
+.context-budget { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin: 0; font-size: var(--font-size-sm); }
+.context-budget dt { color: var(--text-secondary); }
+.context-budget dd { margin: 0; font-family: var(--font-code); }
+.context-inspector h3, .context-inspector summary { font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
+.context-inspector summary { cursor: pointer; min-height: var(--control-compact); overflow-wrap: anywhere; }
+.context-inspector ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); font-size: var(--font-size-sm); }
+.context-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--font-size-sm); }
+.context-messages { display: grid; gap: var(--space-3); }

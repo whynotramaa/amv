@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { beginSignIn, cancelSignIn, chatgptModels, deleteApiKey, desktop, loadConnections, providerModels, reauthorizeAccount, saveProviders, selectAccount, selectChatgptModel, setApiKey, signOutAccount, type AccountMetadata, type ConnectionState, type ModelInfo, type ProviderConfig } from '../bridge';
+import { beginSignIn, cancelSignIn, chatgptModels, deleteApiKey, desktop, loadConnections, openExternal, providerModels, reauthorizeAccount, saveProviders, selectAccount, selectChatgptModel, setApiKey, signOutAccount, type AccountMetadata, type ConnectionState, type ModelInfo, type ProviderConfig } from '../bridge';
 import { Button } from './primitives';
 
 type Notice = { text: string; error: boolean };
@@ -143,7 +143,11 @@ function AccountRow({ account, active, disabled, models, modelBusy, onRun, onRel
         if (!remoteRevocationConfirmed) { await onReload(); throw new Error('Signed out locally; remote revocation was not confirmed. Disconnect Harness in ChatGPT Settings.'); }
       }, 'ChatGPT account signed out.')}>Sign out</Button></div></details>}
     </div>
-    {active && account.signedIn && <div className="account-model-panel">
+    {account.signedIn && account.planUsageEnabled === false && <div className="account-model-panel">
+      <small className="help">Signed in for identity. ChatGPT plan usage needs your permission before models or answers are available.</small>
+      <div className="actions"><Button quiet disabled={disabled} onClick={() => void onRun(() => openExternal('https://chatgpt.com/settings/usage'), 'Review plan usage in ChatGPT Settings.')}>Manage ChatGPT usage</Button><Button quiet disabled={disabled} onClick={() => void onRun(() => reauthorizeAccount(account.accountId), 'Authorize plan usage in your browser.')}>Authorize plan usage</Button></div>
+    </div>}
+    {active && account.signedIn && account.planUsageEnabled !== false && <div className="account-model-panel">
       <div className="summary-row"><div><strong>ChatGPT model</strong>{account.selectedModel && <small className="help">Saved selection: {account.selectedModel}</small>}</div><Button quiet disabled={disabled || modelBusy} onClick={() => void onFindModels()}>{modelBusy ? 'Finding models…' : 'Find models'}</Button></div>
       <select className="input" aria-label={`ChatGPT model for ${title}`} disabled={disabled || !models.length || modelBusy} value={models.some(model => model.id === account.selectedModel) ? account.selectedModel || '' : ''} onChange={event => void onSelectModel(event.target.value)}>
         <option value="" disabled>Choose a discovered model</option>{models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}

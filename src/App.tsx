@@ -27,9 +27,9 @@ export default function App() {
   const [meetingSetup, setMeetingSetup] = useState(false);
   const [meetingTitle, setMeetingTitle] = useState('');
   const [captureConsent, setCaptureConsent] = useState(false);
-  const [remoteConsent, setRemoteConsent] = useState(false);
-  const [includeMicrophone, setIncludeMicrophone] = useState(false);
+  const [prefs, setPrefs] = useState(defaults);
   const [response, setResponse] = useState<ResponseState | null>(null);
+  const [sentThrough, setSentThrough] = useState(0);
   const [opacity, setOpacity] = useState(savedOpacity);
   const meetingVersion = useRef(0);
   const responseGeneration = useRef(0);
@@ -42,9 +42,10 @@ export default function App() {
   const responseBusy = response?.status === 'preparing' || response?.status === 'streaming';
   const listening = meeting.status === 'active' || meeting.status === 'starting' || meeting.status === 'stopping';
   const retainedMeetingId = Number.isInteger(meeting.meetingId) && meeting.meetingId != null ? meeting.meetingId : null;
+  const unsent = meeting.transcript.filter(line => line.id > sentThrough);
   const canAsk = desktop && state.inferenceAvailable && !responseBusy && !commandBusy;
   const commitMeeting = (next: MeetingState) => {
-    if (next.meetingId !== meetingRef.current.meetingId) { setQuestion(''); setIncludeMicrophone(false); responseGeneration.current++; responseRequestId.current = 0; responseRef.current = null; setResponse(null); }
+    if (next.meetingId !== meetingRef.current.meetingId) { setQuestion(''); setSentThrough(0); responseGeneration.current++; responseRequestId.current = 0; responseRef.current = null; setResponse(null); }
     meetingRef.current = next;
     setMeeting(next);
   };
@@ -56,6 +57,7 @@ export default function App() {
       if (after < before || (after === before && (next.answer.length < previous.answer.length ||
         (!['preparing', 'streaming'].includes(previous.status) && ['preparing', 'streaming'].includes(next.status))))) return;
     }
+    if (next.requestId !== responseRequestId.current) setSentThrough(Math.max(0, ...meetingRef.current.transcript.map(line => line.id)));
     responseRequestId.current = next.requestId;
     responseRef.current = next;
     setResponse(next);
@@ -105,7 +107,7 @@ export default function App() {
     if (event.button === 0 && !(event.target as HTMLElement).closest('button, select, input, textarea, a')) void startDragging().catch(() => {});
   }
   async function toggleListening() {
-    if (!listening) { setCaptureConsent(false); setRemoteConsent(false); setMeetingSetup(true); return; }
+    if (!listening) { setCaptureConsent(false); setPrefs(state.settings); setMeetingSetup(true); return; }
     setMeetingBusy(true); setNotice(null);
     const version = meetingVersion.current;
     try {
@@ -117,19 +119,17 @@ export default function App() {
   async function beginMeeting(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!captureConsent || !meetingTitle.trim() || meetingBusy) return;
+    if (prefs.responseMode === 'custom' && !prefs.customInstruction.trim()) { setNotice({ text: 'Write an instruction for custom responses.', error: true }); return; }
     setMeetingBusy(true); setNotice(null);
     const version = meetingVersion.current;
     try {
-      const next = await startMeeting(meetingTitle.trim(), captureConsent, null, remoteConsent);
+      const saved = await saveSettings(prefs);
+      setState(old => ({ ...old, settings: saved }));
+      const next = await startMeeting(meetingTitle.trim(), captureConsent, null, saved.sendMode === 'automatic');
       if (version === meetingVersion.current) commitMeeting(next);
-      setMeetingSetup(false); setCaptureConsent(false); setRemoteConsent(false);
+      setMeetingSetup(false); setCaptureConsent(false);
     } catch (error) { setNotice({ text: String(error), error: true }); }
     finally { setMeetingBusy(false); }
-  }
-  async function changeMode(responseMode: Settings['responseMode']) {
-    if (responseMode === 'custom' && !state.settings.customInstruction.trim()) { setDraft({ ...state.settings, responseMode }); setView('settings'); setNotice({ text: 'Write your custom instruction, then save.' }); return; }
-    try { const saved = await saveSettings({ ...state.settings, responseMode }); setState(old => ({ ...old, settings: saved })); }
-    catch (error) { setNotice({ text: String(error), error: true }); }
   }
   async function openSavedMeeting(id: number) {
     const version = meetingVersion.current;
@@ -154,7 +154,7 @@ export default function App() {
         commitMeeting(next); meetingId = next.meetingId; generation = responseGeneration.current;
       }
       if (meetingId === null) throw new Error('Chat could not start.');
-      acceptResponse(await askMeeting(meetingId, text, includeMicrophone), generation, meetingId);
+      acceptResponse(await askMeeting(meetingId, text, false), generation, meetingId);
     } catch (error) { if (generation === responseGeneration.current && meetingId === meetingRef.current.meetingId) { setQuestion(old => old || text); setNotice({ text: String(error), error: true }); } }
     finally { commandPending.current = false; setCommandBusy(false); }
   }
@@ -166,7 +166,7 @@ export default function App() {
     catch (error) { if (generation === responseGeneration.current) setNotice({ text: String(error), error: true }); }
     finally { commandPending.current = false; setCommandBusy(false); }
   }
-  function onQuestionKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void askQuestion(); } }
+  function onQuestionKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void (question.trim() || retainedMeetingId === null ? askQuestion() : sendSpeech()); } }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (new TextEncoder().encode(draft.customInstruction).length > 8192) { setNotice({ text: 'Custom instructions must be 8,192 UTF-8 bytes or smaller.', error: true }); return; }
@@ -195,13 +195,30 @@ export default function App() {
           {meetingSetup && <form className="settings-form" onSubmit={beginMeeting} aria-label="Prepare a meeting">
             <div className="field"><label htmlFor="meeting-title">Meeting title</label><input id="meeting-title" className="input" value={meetingTitle} maxLength={200} onChange={event => setMeetingTitle(event.target.value)} disabled={meetingBusy} required /></div>
             <label className="checkbox"><input type="checkbox" checked={captureConsent} onChange={event => setCaptureConsent(event.target.checked)} disabled={meetingBusy} />I have permission to capture audio for this meeting.</label>
-            {state.settings.sendMode === 'automatic' && <label className="checkbox"><input type="checkbox" checked={remoteConsent} onChange={event => setRemoteConsent(event.target.checked)} disabled={meetingBusy} />Allow automatic sending of new system speech during this meeting</label>}
-            <p className="help">Capture is local. Remote answers use new system speech and message history. Automatic sending requires permission for each meeting.</p>
+            <div className="field">
+              <span className="field-label" id="setup-mode-label">Output</span>
+              <div className="choice-group" role="radiogroup" aria-labelledby="setup-mode-label">
+                <label className="choice"><input type="radio" name="setupMode" checked={prefs.responseMode === 'suggested_answers'} onChange={() => setPrefs(old => ({ ...old, responseMode: 'suggested_answers' }))} disabled={meetingBusy} />Suggested answers</label>
+                <label className="choice"><input type="radio" name="setupMode" checked={prefs.responseMode === 'summary'} onChange={() => setPrefs(old => ({ ...old, responseMode: 'summary' }))} disabled={meetingBusy} />Summary</label>
+                <label className="choice"><input type="radio" name="setupMode" checked={prefs.responseMode === 'custom'} onChange={() => setPrefs(old => ({ ...old, responseMode: 'custom' }))} disabled={meetingBusy} />Custom</label>
+              </div>
+            </div>
+            {prefs.responseMode === 'custom' && <div className="field"><label htmlFor="setup-instruction">Custom instruction</label><textarea id="setup-instruction" className="input" maxLength={4000} value={prefs.customInstruction} onChange={event => setPrefs(old => ({ ...old, customInstruction: event.target.value }))} disabled={meetingBusy} placeholder="For each new message, identify decisions and open questions." /></div>}
+            <div className="field">
+              <span className="field-label" id="setup-send-label">Send speech</span>
+              <div className="choice-group" role="radiogroup" aria-labelledby="setup-send-label">
+                <label className="choice"><input type="radio" name="setupSend" checked={prefs.sendMode === 'on_hotkey'} onChange={() => setPrefs(old => ({ ...old, sendMode: 'on_hotkey' }))} disabled={meetingBusy} />On hotkey ({prefs.sendShortcut})</label>
+                <label className="choice"><input type="radio" name="setupSend" checked={prefs.sendMode === 'automatic'} onChange={() => setPrefs(old => ({ ...old, sendMode: 'automatic' }))} disabled={meetingBusy} />After a pause</label>
+              </div>
+            </div>
+            {prefs.sendMode === 'automatic' && <div className="field"><label htmlFor="setup-delay">Send after {prefs.autoSendDelayMs / 1000}s of silence</label><input id="setup-delay" type="range" min={500} max={10000} step={500} value={prefs.autoSendDelayMs} onChange={event => setPrefs(old => ({ ...old, autoSendDelayMs: Number(event.target.value) }))} disabled={meetingBusy} /></div>}
+            <label className="checkbox"><input type="checkbox" checked={prefs.includeMicrophone} onChange={event => setPrefs(old => ({ ...old, includeMicrophone: event.target.checked }))} disabled={meetingBusy} />Include my microphone as context</label>
+            {notice && <p className={`notice${notice.error ? ' error' : ''}`} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
             <div className="form-actions"><Button quiet disabled={meetingBusy} onClick={() => setMeetingSetup(false)}>Cancel meeting setup</Button><Button primary type="submit" disabled={meetingBusy || !captureConsent || !meetingTitle.trim()}>Start local meeting</Button></div>
           </form>}
-          {retainedMeetingId !== null && <details className="meeting-context"><summary>{meeting.title || 'Meeting context'}{listening ? ' · Listening' : ' · Saved locally'}</summary><div className="transcript" aria-label="Finalized transcript">{meeting.transcript.map(segment => <p key={segment.id}><span className="help">{segment.source === 'system' ? 'SYSTEM' : 'MIC'} </span>{segment.text}</p>)}</div></details>}
+          {listening && unsent.length > 0 && <div className="pending-speech" aria-label="Unsent speech">{unsent.map(line => <p key={line.id}>{line.text}</p>)}</div>}
           {response && <Suspense fallback={null}><ResponseView response={response} onRetry={response.status === 'error' || response.status === 'cancelled' ? sendSpeech : undefined} /></Suspense>}
-          {notice && <p className={`notice${notice.error ? ' error' : ''}`} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
+          {!meetingSetup && notice && <p className={`notice${notice.error ? ' error' : ''}`} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
         </> : <form className="settings-form" onSubmit={submit}>
           <div className="settings-links">
             <Button quiet onClick={() => { setView('connections'); setNotice(null); }}>{state.inferenceAvailable ? 'ChatGPT connected' : state.chatgptConnected ? 'Pick a model' : 'Connect ChatGPT'}</Button>
@@ -210,17 +227,10 @@ export default function App() {
             <Button quiet onClick={() => void openMemory().catch(error => setNotice({ text: String(error), error: true }))}>Memory</Button>
           </div>
           <div className="field"><label htmlFor="opacity">Background opacity {Math.round(opacity * 100)}%</label><input id="opacity" type="range" min={15} max={100} value={Math.round(opacity * 100)} onChange={event => setOpacity(clampOpacity(Number(event.target.value) / 100))} /><small>Ctrl+Alt+[ and Ctrl+Alt+] adjust it. Ctrl+Alt+0 resets it.</small></div>
-          <div className="field">
-            <span className="field-label" id="send-mode-label">Send speech</span>
-            <div className="choice-group" role="radiogroup" aria-labelledby="send-mode-label">
-              <label className="choice"><input type="radio" name="sendMode" value="on_hotkey" checked={draft.sendMode === 'on_hotkey'} onChange={() => update('sendMode', 'on_hotkey')} />On hotkey</label>
-              <label className="choice"><input type="radio" name="sendMode" value="automatic" checked={draft.sendMode === 'automatic'} onChange={() => update('sendMode', 'automatic')} />Automatically</label>
-            </div>
-          </div>
-          <div className="field"><label htmlFor="custom-instruction">Custom instruction</label><textarea id="custom-instruction" className="input" maxLength={4000} value={draft.customInstruction} onChange={event => update('customInstruction', event.target.value)} placeholder="For each new message, identify decisions and open questions." /></div>
           <div className="shortcut-fields">
             <div className="field"><label htmlFor="overlay-shortcut">Show or hide</label><input id="overlay-shortcut" className="input" maxLength={100} value={draft.overlayShortcut} onChange={event => update('overlayShortcut', event.target.value)} required spellCheck={false} /></div>
             <div className="field"><label htmlFor="send-shortcut">Send speech</label><input id="send-shortcut" className="input" maxLength={100} value={draft.sendShortcut} onChange={event => update('sendShortcut', event.target.value)} required spellCheck={false} /></div>
+            <div className="field"><label htmlFor="new-chat-shortcut">New chat</label><input id="new-chat-shortcut" className="input" maxLength={100} value={draft.newChatShortcut} onChange={event => update('newChatShortcut', event.target.value)} required spellCheck={false} /></div>
           </div>
           <label className="checkbox"><input type="checkbox" checked={draft.launchOnLogin} onChange={event => update('launchOnLogin', event.target.checked)} />Launch when I sign in to Windows</label>
           {notice && <p className={`notice${notice.error ? ' error' : ''}`} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
@@ -228,20 +238,14 @@ export default function App() {
         </form>}
       </div>
 
-      {view === 'assistant' && <div className="composer">
+      {view === 'assistant' && !meetingSetup && <div className="composer">
         <div className="composer-input">
-          <textarea aria-label="Message" placeholder={!desktop ? 'Available in the Windows app' : state.inferenceAvailable ? 'Ask anything' : state.chatgptConnected ? 'Pick a ChatGPT model in settings first' : 'Connect ChatGPT in settings first'} value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={onQuestionKeyDown} disabled={!canAsk} rows={1} />
+          <textarea aria-label="Message" placeholder={!desktop ? 'Available in the Windows app' : state.inferenceAvailable ? (retainedMeetingId !== null ? `Ask anything, or Enter / ${state.settings.sendShortcut} to send speech` : 'Ask anything') : state.chatgptConnected ? 'Pick a ChatGPT model in settings first' : 'Connect ChatGPT in settings first'} value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={onQuestionKeyDown} disabled={!canAsk} rows={1} />
           <IconButton icon="arrow" label="Send" onClick={() => void askQuestion()} disabled={!canAsk || !question.trim()} />
         </div>
-        {retainedMeetingId !== null && <p className="help">Output mode changes apply to the next meeting or new chat.</p>}
-        {retainedMeetingId !== null && <label className="checkbox"><input type="checkbox" checked={includeMicrophone} onChange={event => setIncludeMicrophone(event.target.checked)} disabled={!canAsk} />Include microphone context</label>}
         <div className="composer-bar">
-          <select className="mode-select" aria-label="Output mode for next meeting" title="Applies to the next meeting or new chat" value={state.settings.responseMode} onChange={event => void changeMode(event.target.value as Settings['responseMode'])} disabled={loading}>
-            <option value="suggested_answers">Suggested answers</option><option value="summary">Summary</option><option value="custom">Custom</option>
-          </select>
           <div className="composer-actions">
             {responseBusy && <Button quiet onClick={() => void cancelResponse().catch(error => setNotice({ text: String(error), error: true }))}>Stop</Button>}
-            {retainedMeetingId !== null && <Button quiet onClick={() => void sendSpeech()} disabled={!state.inferenceAvailable || responseBusy || commandBusy}>Send speech</Button>}
             <button type="button" className={`icon-button mic${listening ? ' on' : ''}`} aria-label={listening ? 'Stop listening' : 'Start listening'} aria-pressed={listening} title={listening ? 'Stop listening' : 'Start listening'} onClick={() => void toggleListening()} disabled={!desktop || meetingBusy || meeting.status === 'starting' || meeting.status === 'stopping'}>
               <Icon name="mic" />
             </button>

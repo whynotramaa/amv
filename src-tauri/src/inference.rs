@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::Serialize;
 use serde_json::{json, Value};
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{timeout, Duration};
 use url::Url;
 
 const MAX_EVENT: usize = 64 * 1024;
@@ -92,7 +92,20 @@ impl fmt::Debug for StreamFailure {
 
 impl fmt::Display for StreamFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "inference {:?}", self.kind)
+        write!(f, "Inference {:?}", self.kind)?;
+        if let Some(status) = self.status {
+            write!(f, "; HTTP {status}")?;
+        }
+        if let Some(code) = &self.code {
+            write!(f, "; code {code}")?;
+        }
+        if let Some(param) = &self.param {
+            write!(f, "; parameter {param}")?;
+        }
+        if let Some(id) = &self.request_id {
+            write!(f, "; request {id}")?;
+        }
+        Ok(())
     }
 }
 
@@ -110,6 +123,9 @@ where
     F: FnMut(&str) -> bool,
 {
     validate_endpoint(&endpoint)?;
+    if api == WireApi::Chatgpt && endpoint.as_str() != "https://api.openai.com/v1/responses" {
+        return Err(local_failure(FailureKind::InvalidRequest));
+    }
     if bearer.is_empty() || bearer.len() > 16 * 1024 {
         return Err(local_failure(FailureKind::InvalidRequest));
     }
@@ -124,22 +140,13 @@ where
     let mut authorization = reqwest::header::HeaderValue::from_str(&header)
         .map_err(|_| local_failure(FailureKind::InvalidRequest))?;
     authorization.set_sensitive(true);
-    let first_deadline = Instant::now() + Duration::from_secs(10);
-    let mut post = client
+    let post = client
         .post(endpoint)
         .header(AUTHORIZATION, authorization)
         .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "text/event-stream");
-    if api == WireApi::Chatgpt {
-        let account = crate::auth::chatgpt_account_id(bearer)
-            .ok_or_else(|| local_failure(FailureKind::Auth))?;
-        post = post
-            .header("chatgpt-account-id", account)
-            .header("OpenAI-Beta", "responses=experimental")
-            .header("originator", "codex_cli_rs")
-            .header("session_id", uuid::Uuid::new_v4().to_string());
-    }
-    let response = timeout(Duration::from_secs(10), post.body(body).send())
+        .header(ACCEPT, "text/event-stream")
+        .timeout(Duration::from_secs(600));
+    let response = timeout(Duration::from_secs(30), post.body(body).send())
         .await
         .map_err(|_| local_failure(FailureKind::Timeout))?
         .map_err(|error| transport_failure(error.is_timeout()))?;
@@ -180,24 +187,17 @@ where
     let mut answer_bytes = 0usize;
 
     loop {
-        let read = timeout(
-            if visible_output {
-                Duration::from_secs(60)
-            } else {
-                first_deadline.saturating_duration_since(Instant::now())
-            },
-            bytes.next(),
-        )
-        .await
-        .map_err(|_| StreamFailure {
-            kind: FailureKind::Timeout,
-            status: None,
-            request_id: request_id.clone(),
-            body_shape: None,
-            code: None,
-            param: None,
-            any_output,
-        })?;
+        let read = timeout(Duration::from_secs(60), bytes.next())
+            .await
+            .map_err(|_| StreamFailure {
+                kind: FailureKind::Timeout,
+                status: None,
+                request_id: request_id.clone(),
+                body_shape: None,
+                code: None,
+                param: None,
+                any_output,
+            })?;
         let Some(chunk) = read else { break };
         let chunk = chunk.map_err(|_| StreamFailure {
             kind: FailureKind::Transport,
@@ -311,32 +311,11 @@ pub fn can_fallback(failure: &StreamFailure, allowed_by_user: bool) -> bool {
 }
 
 fn responses_body(request: &StreamRequest) -> Value {
-    let mut input = Vec::new();
-    let mut instructions = request.instructions.clone();
-    for message in &request.messages {
-        if matches!(message.role.as_str(), "system" | "developer") {
-            if let Some(existing) = &mut instructions {
-                existing.push_str("\n\n");
-                existing.push_str(&message.content);
-            } else {
-                instructions = Some(message.content.clone());
-            }
-        } else {
-            let kind = if message.role == "assistant" {
-                "output_text"
-            } else {
-                "input_text"
-            };
-            input.push(json!({ "type": "message", "role": message.role, "content": [{ "type": kind, "text": message.content }] }));
-        }
-    }
-    json!({
-        "model": request.model,
-        "instructions": instructions.unwrap_or_default(),
-        "input": input,
-        "store": false,
-        "stream": true,
-    })
+    let input: Vec<_> = request.messages.iter().map(|message| {
+        let kind = if message.role == "assistant" { "output_text" } else { "input_text" };
+        json!({"type": "message", "role": message.role, "content": [{"type": kind, "text": message.content}]})
+    }).collect();
+    json!({"model": request.model, "instructions": request.instructions, "input": input, "store": false, "stream": true})
 }
 
 fn compat_body(request: &StreamRequest) -> Value {
@@ -490,6 +469,11 @@ fn safe_code(value: &str) -> Option<String> {
     match value {
         "subscription_sharing_usage_limit_exceeded"
         | "subscription_sharing_invalid_user"
+        | "subscription_sharing_user_not_eligible"
+        | "subscription_sharing_usage_unavailable"
+        | "subscription_sharing_unsupported_capability"
+        | "subscription_sharing_route_not_supported"
+        | "subscription_sharing_user_unavailable"
         | "chatpass_v2_scope_not_authorized"
         | "chatpass_v2_invalid_authorization_context"
         | "invalid_api_key"
@@ -723,6 +707,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn diagnostics_keep_safe_receipts_without_provider_messages() {
+        let mut failure = structured_failure(
+            &json!({"error":{"code":"subscription_sharing_user_not_eligible", "param":"model", "message":"private transcript"}}),
+            FailureKind::Auth,
+        );
+        failure.status = Some(403);
+        failure.request_id = Some("req_public_receipt".into());
+        let diagnostic = failure.to_string();
+        assert!(diagnostic.contains("HTTP 403"));
+        assert!(diagnostic.contains("subscription_sharing_user_not_eligible"));
+        assert!(diagnostic.contains("req_public_receipt"));
+        assert!(!diagnostic.contains("private transcript"));
+        assert!(safe_code("arbitrary private text").is_none());
+        assert!(!can_fallback(&failure, false));
+    }
+
+    #[test]
     fn compatibility_context_is_data_under_the_trusted_instruction() {
         let request = StreamRequest {
             model: "model".into(),
@@ -738,6 +739,15 @@ mod tests {
                 },
             ],
         };
+        let public = responses_body(&request);
+        assert_eq!(public["instructions"], "trusted rules");
+        assert_eq!(public["input"][0]["role"], "developer");
+        assert_eq!(
+            public["input"][0]["content"][0]["text"],
+            "quoted untrusted context"
+        );
+        assert_eq!(public["store"], false);
+        assert_eq!(public["stream"], true);
         let value = compat_body(&request);
         assert_eq!(value["messages"][0]["role"], "system");
         assert_eq!(value["messages"][1]["role"], "user");
