@@ -48,5 +48,23 @@ Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $started }
     Where-Object { $_.Message -match 'harness' } |
     Format-List TimeCreated, ProviderName, Id, Message | Out-File (Join-Path $Out 'events.txt')
 
+# Echo the evidence into the job log so it can be read without downloading the artifact.
+Get-ChildItem $Out -File -Include *.txt, *.log -Recurse | ForEach-Object { "===== $($_.Name)"; Get-Content $_.FullName -Tail 60 }
+$codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object MimeType -eq 'image/jpeg'
+$quality = New-Object System.Drawing.Imaging.EncoderParameters 1
+$quality.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality), 55L
+Get-ChildItem $Out -Filter *.png | ForEach-Object {
+    $image = [System.Drawing.Image]::FromFile($_.FullName)
+    $scale = [Math]::Min(1.0, 1024 / $image.Width)
+    $small = New-Object System.Drawing.Bitmap $image, ([int]($image.Width * $scale)), ([int]($image.Height * $scale))
+    $stream = New-Object System.IO.MemoryStream
+    $small.Save($stream, $codec, $quality)
+    $text = [Convert]::ToBase64String($stream.ToArray())
+    "===== BEGIN SCREENSHOT $($_.BaseName)"
+    for ($i = 0; $i -lt $text.Length; $i += 4000) { $text.Substring($i, [Math]::Min(4000, $text.Length - $i)) }
+    "===== END SCREENSHOT $($_.BaseName)"
+    $small.Dispose(); $image.Dispose(); $stream.Dispose()
+}
+
 Get-Process harness -ErrorAction SilentlyContinue | Stop-Process -Force
 if (-not $alive) { throw 'Harness exited during startup. See the smoke artifact.' }
