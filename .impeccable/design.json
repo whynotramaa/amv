@@ -1,0 +1,416 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-07T03:13:45.703331+00:00",
+  "title": "Design System: Harness",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "Charcoal Canvas",
+        "canonical": "#111316",
+        "tonalRamp": [
+          "#111316",
+          "#171a1e",
+          "#20242a",
+          "#2a3036",
+          "#454e5a",
+          "#8e99a8",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Quiet Surface",
+        "canonical": "#191c20",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#2a3036",
+          "#454e5a",
+          "#9aa5b3",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "surface-elevated": {
+        "role": "neutral",
+        "displayName": "Raised Surface",
+        "canonical": "#22262b",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#2a3036",
+          "#454e5a",
+          "#9aa5b3",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "surface-hover": {
+        "role": "neutral",
+        "displayName": "Hover Surface",
+        "canonical": "#2a3036",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#2a3036",
+          "#454e5a",
+          "#9aa5b3",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "surface-active": {
+        "role": "neutral",
+        "displayName": "Active Surface",
+        "canonical": "#303842",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#303842",
+          "#454e5a",
+          "#9aa5b3",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Primary Text",
+        "canonical": "#e9edf2",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#454e5a",
+          "#8e99a8",
+          "#b6bec9",
+          "#d5dbe3",
+          "#e9edf2"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Secondary Text",
+        "canonical": "#b6bec9",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#454e5a",
+          "#8e99a8",
+          "#b6bec9",
+          "#d5dbe3",
+          "#e9edf2"
+        ]
+      },
+      "text-tertiary": {
+        "role": "neutral",
+        "displayName": "Tertiary Text",
+        "canonical": "#9aa5b3",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#454e5a",
+          "#8e99a8",
+          "#9aa5b3",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Muted Text",
+        "canonical": "#8e99a8",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#454e5a",
+          "#8e99a8",
+          "#9aa5b3",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "border-subtle": {
+        "role": "neutral",
+        "displayName": "Subtle Border",
+        "canonical": "#a7b3c21a",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#a7b3c21a",
+          "#454e5a",
+          "#8e99a8",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "border-default": {
+        "role": "neutral",
+        "displayName": "Default Border",
+        "canonical": "#454e5a",
+        "tonalRamp": [
+          "#111316",
+          "#191c20",
+          "#22262b",
+          "#2e343c",
+          "#454e5a",
+          "#8e99a8",
+          "#b6bec9",
+          "#e9edf2"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Muted Cool Accent",
+        "canonical": "#b2c9e5",
+        "tonalRamp": [
+          "#1a2028",
+          "#26313e",
+          "#2c3b4d",
+          "#536a84",
+          "#7e9ab8",
+          "#9db6d1",
+          "#b2c9e5",
+          "#dce8f5"
+        ]
+      },
+      "accent-muted": {
+        "role": "neutral",
+        "displayName": "Muted Accent Surface",
+        "canonical": "#2c3b4d",
+        "tonalRamp": [
+          "#111316",
+          "#1a2028",
+          "#26313e",
+          "#2c3b4d",
+          "#536a84",
+          "#7e9ab8",
+          "#b2c9e5",
+          "#dce8f5"
+        ]
+      },
+      "danger": {
+        "role": "semantic",
+        "displayName": "Soft Danger",
+        "canonical": "#f0aaa6",
+        "tonalRamp": [
+          "#2b1718",
+          "#482326",
+          "#713536",
+          "#a15a5a",
+          "#c77d79",
+          "#e09691",
+          "#f0aaa6",
+          "#f9d4d0"
+        ]
+      },
+      "success": {
+        "role": "semantic",
+        "displayName": "Soft Success",
+        "canonical": "#b3d1be",
+        "tonalRamp": [
+          "#17241c",
+          "#26382c",
+          "#3d5946",
+          "#62806a",
+          "#84a58e",
+          "#9fbea8",
+          "#b3d1be",
+          "#d8e8dc"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default copy and controls."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Assistant and settings page headings."
+      },
+      "section-title": {
+        "displayName": "Section title",
+        "purpose": "Secondary headings when needed."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Button labels and compact field labels."
+      },
+      "meta": {
+        "displayName": "Meta",
+        "purpose": "Shortcut metadata, status metadata, and preview notes."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Geist Mono for fenced code and keyboard hints."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "standard-duration",
+        "value": "180ms",
+        "purpose": "Default control and surface state transition."
+      },
+      {
+        "name": "standard-ease",
+        "value": "cubic-bezier(.2, .8, .2, 1)",
+        "purpose": "Calm desktop-native easing for state changes."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "@media (prefers-reduced-motion: reduce)",
+        "purpose": "Remove transitions and animations for users who request reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "460px",
+        "purpose": "Stack shortcut fields and reduce surface/outer padding below this width."
+      },
+      {
+        "name": "preview-max",
+        "value": "520px",
+        "purpose": "Maximum preview assistant width."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "One clear next action in the assistant or settings form.",
+      "html": "<button class=\"ds-btn-primary\">Prepare a meeting</button>",
+      "css": ".ds-btn-primary { min-height: var(--control-height); padding: var(--space-2) var(--space-4); border: 1px solid var(--text-primary); border-radius: var(--radius-md); background: var(--text-primary); color: var(--background); font: var(--font-weight-medium) var(--font-size-md)/var(--line-height) var(--font-ui); transition: background-color var(--motion-duration) var(--motion-ease), border-color var(--motion-duration) var(--motion-ease); } .ds-btn-primary:hover { background: var(--accent); border-color: var(--accent); } .ds-btn-primary:focus-visible { outline: var(--focus-width) solid var(--focus-color); outline-offset: var(--focus-offset); }"
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "A bordered secondary action with quiet tonal hover.",
+      "html": "<button class=\"ds-btn-default\">Secondary action</button>",
+      "css": ".ds-btn-default { min-height: var(--control-height); padding: var(--space-2) var(--space-4); border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-elevated); color: var(--text-primary); font: var(--font-weight-medium) var(--font-size-md)/var(--line-height) var(--font-ui); transition: background-color var(--motion-duration) var(--motion-ease), border-color var(--motion-duration) var(--motion-ease); } .ds-btn-default:hover { background: var(--surface-hover); } .ds-btn-default:focus-visible { outline: var(--focus-width) solid var(--focus-color); outline-offset: var(--focus-offset); }"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "A low-emphasis action that gains only a tonal hover state.",
+      "html": "<button class=\"ds-btn-quiet\">Cancel</button>",
+      "css": ".ds-btn-quiet { min-height: var(--control-height); padding: var(--space-2) var(--space-4); border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--text-primary); font: var(--font-weight-medium) var(--font-size-md)/var(--line-height) var(--font-ui); transition: background-color var(--motion-duration) var(--motion-ease); } .ds-btn-quiet:hover { background: var(--surface-hover); } .ds-btn-quiet:focus-visible { outline: var(--focus-width) solid var(--focus-color); outline-offset: var(--focus-offset); }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Raised, readable field for settings and the unavailable composer.",
+      "html": "<input class=\"ds-input\" aria-label=\"Example field\" placeholder=\"Example field\" />",
+      "css": ".ds-input { min-height: var(--control-height); width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-elevated); color: var(--text-primary); font: var(--font-weight-normal) var(--font-size-md)/var(--line-height) var(--font-ui); caret-color: var(--accent); transition: border-color var(--motion-duration) var(--motion-ease); } .ds-input::placeholder { color: var(--text-muted); opacity: 1; } .ds-input:hover { border-color: var(--border-default); } .ds-input:focus-visible { outline: var(--focus-width) solid var(--focus-color); outline-offset: var(--focus-offset); }"
+    },
+    {
+      "name": "Choice Group",
+      "kind": "custom",
+      "description": "Compact segmented radio choices for sending mode.",
+      "html": "<div class=\"ds-choice-group\"><label class=\"ds-choice\"><input type=\"radio\" checked name=\"mode\" /> On hotkey</label><label class=\"ds-choice\"><input type=\"radio\" name=\"mode\" /> Automatically</label></div>",
+      "css": ".ds-choice-group { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-1); padding: var(--space-1); border-radius: var(--radius-md); background: var(--background); } .ds-choice { display: flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: var(--control-height); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); color: var(--text-secondary); } .ds-choice:has(input:checked) { background: var(--surface-active); color: var(--text-primary); } .ds-choice input { accent-color: var(--accent); } .ds-choice:has(input:focus-visible) { outline: var(--focus-width) solid var(--focus-color); outline-offset: var(--focus-offset); }"
+    },
+    {
+      "name": "Connections Account Row",
+      "kind": "custom",
+      "description": "Explicit account identity and signed-in status, quiet selection, native Account options for reauthorization/sign-out, and explicit model discovery for the selected account. Unsaved provider settings survive account operations.",
+      "html": "<div class=\"ds-account-row\"><div><p>ChatGPT account</p><small>Account abc123 \u00b7 Signed in</small></div><button class=\"ds-account-action\">Use account</button><details><summary>Account options</summary><button class=\"ds-account-action\">Sign in again</button><button class=\"ds-account-action\">Sign out</button></details></div>",
+      "css": ".ds-account-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); } .ds-account-row p { margin: 0; color: var(--text-primary); font: var(--font-weight-normal) var(--font-size-md)/var(--line-height) var(--font-ui); } .ds-account-row small { color: var(--text-secondary); font: var(--font-weight-normal) var(--font-size-sm)/var(--line-height) var(--font-ui); } .ds-account-action { min-height: var(--control-height); padding: var(--space-2) var(--space-4); border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--text-primary); font: var(--font-weight-medium) var(--font-size-md)/var(--line-height) var(--font-ui); } .ds-account-action:hover { background: var(--surface-hover); } .ds-account-action:focus-visible { outline: var(--focus-width) solid var(--focus-color); outline-offset: var(--focus-offset); }"
+    },
+    {
+      "name": "Provider Fallback Fields",
+      "kind": "custom",
+      "description": "Ordered API fallback settings for a provider: URL-bound credential, discovered model, and explicit consent.",
+      "html": "<div class=\"ds-provider-fields\"><h3>Gemini</h3><label>Base URL<input class=\"ds-provider-input\" type=\"url\" value=\"https://example.com/\" /></label><label>API key<input class=\"ds-provider-input\" type=\"password\" placeholder=\"Enter API key\" /></label><label>Model<select class=\"ds-provider-input\"><option>Choose a discovered model</option></select></label><label class=\"ds-provider-consent\"><input type=\"checkbox\" /> Allow Gemini to receive text as a fallback</label></div>",
+      "css": ".ds-provider-fields { display: grid; gap: var(--space-4); border-top: 1px solid var(--border-subtle); padding-top: var(--space-5); } .ds-provider-fields h3 { margin: 0; color: var(--text-primary); font: var(--font-weight-medium) var(--font-size-md)/var(--line-height) var(--font-ui); } .ds-provider-fields label { display: grid; gap: var(--space-2); color: var(--text-primary); font: var(--font-weight-medium) var(--font-size-md)/var(--line-height) var(--font-ui); } .ds-provider-input { min-height: var(--control-height); width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-elevated); color: var(--text-primary); font: var(--font-weight-normal) var(--font-size-md)/var(--line-height) var(--font-ui); } .ds-provider-input:focus-visible { outline: var(--focus-width) solid var(--focus-color); outline-offset: var(--focus-offset); } .ds-provider-consent { display: flex !important; align-items: center; gap: var(--space-3) !important; min-height: var(--control-height); color: var(--text-secondary) !important; font-weight: var(--font-weight-normal) !important; } .ds-provider-consent input { width: var(--space-4); height: var(--space-4); accent-color: var(--accent); }"
+    },
+    {
+      "name": "Meeting Setup",
+      "kind": "custom",
+      "description": "Permissioned local meeting setup: required title, saved preference summary, and an unchecked per-meeting consent control. Native microphone selection is offered before capture; discovery does not start recording.",
+      "html": "<form class=\"meeting-setup\"><label>Meeting title<input class=\"ds-input\" maxlength=\"200\" required /></label><div class=\"ds-summary\">Send system speech \u00b7 On hotkey</div><label class=\"ds-checkbox\"><input type=\"checkbox\" /> I have permission to capture audio for this meeting.</label><button class=\"ds-btn-primary\" disabled>Start local meeting</button></form>",
+      "css": ".meeting-setup { display: grid; gap: var(--space-5); } .meeting-setup .ds-summary { display: grid; gap: var(--space-3); border-block: 1px solid var(--border-subtle); padding-block: var(--space-4); color: var(--text-secondary); } .meeting-setup .ds-checkbox { display: flex; align-items: flex-start; gap: var(--space-3); min-height: var(--control-height); color: var(--text-secondary); } .meeting-setup .ds-checkbox input { margin-top: 5px; accent-color: var(--accent); }"
+    },
+    {
+      "name": "Meeting State",
+      "kind": "custom",
+      "description": "Single status group for starting, active, stopping, error, and locally saved meetings; active elapsed time is visible-aware.",
+      "html": "<div class=\"ds-meeting-state\"><span class=\"ds-status-dot active\"></span><span>Meeting in progress</span><time>04:12</time></div>",
+      "css": ".ds-meeting-state { display: flex; align-items: center; gap: var(--space-2); color: var(--text-secondary); font-size: var(--font-size-sm); } .ds-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); } .ds-meeting-state time { margin-left: auto; color: var(--text-secondary); font-family: var(--font-code); font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Finalized Transcript",
+      "kind": "custom",
+      "description": "Bounded local transcript list with source and start time before each finalized line; retained after stop.",
+      "html": "<div class=\"ds-transcript\"><div class=\"ds-transcript-line\"><span>SYSTEM</span><time>01:24</time><span>Finalized local speech.</span></div></div>",
+      "css": ".ds-transcript { display: grid; gap: var(--space-3); max-height: 300px; overflow: auto; border-top: 1px solid var(--border-subtle); padding-top: var(--space-4); } .ds-transcript-line { display: grid; grid-template-columns: 52px 36px 1fr; gap: var(--space-2); align-items: start; font-size: var(--font-size-sm); } .ds-transcript-line > :is(:first-child, time) { color: var(--text-muted); font-family: var(--font-code); font-size: var(--font-size-xs); }"
+    },
+    {
+      "name": "Unavailable Remote Composer",
+      "kind": "custom",
+      "description": "Disabled question input and send action with explicit unavailable copy; no remote capture or answering is implied.",
+      "html": "<div class=\"ds-composer\"><input disabled placeholder=\"Meeting questions aren't available yet\" /><button class=\"ds-icon-button\" disabled aria-label=\"Send question\">\u2191</button></div>",
+      "css": ".ds-composer { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-elevated); } .ds-composer input { min-width: 0; width: 100%; height: var(--control-compact); border: 0; background: transparent; color: var(--text-primary); } .ds-composer input:disabled, .ds-composer .ds-icon-button:disabled { cursor: not-allowed; color: var(--text-muted); }"
+    },
+    {
+      "name": "Saved Meeting History",
+      "kind": "custom",
+      "description": "Local completed/interrupted meeting rows, replacing pages, source-tagged transcript and explicit literal search. No remote requests.",
+      "html": "<section class=\"ds-history\"><h2>Saved meetings</h2><button class=\"ds-history-row\"><span>Acme sales call</span><span>Completed</span></button><p>Transcript search stays on this device.</p></section>",
+      "css": ".ds-history { display: grid; gap: var(--space-4); } .ds-history-row { display: flex; justify-content: space-between; padding: var(--space-3) 0; border: 0; border-bottom: 1px solid var(--border-subtle); background: transparent; color: var(--text-primary); font: inherit; } .ds-history-row:hover { background: var(--surface-hover); } .ds-history-row span:last-child { color: var(--text-secondary); font-size: var(--font-size-xs); }"
+    },
+    {
+      "name": "Streaming response",
+      "kind": "section",
+      "description": "A restrained answer with provider/model metadata, partial/error state, omitted-context disclosure, actual usage and expandable transcript. Poppins text, Geist Mono code, existing tokens, no shadows."
+    }
+  ],
+  "narrative": {
+    "northStar": "Clarity beside the conversation",
+    "overview": "Harness is a private, permission-based sales assistant for meeting notes and answers grounded in supplied facts. Clarity comes first. The interface is an original compact desktop utility with the restraint of professional tools such as Linear; references guide principles, not copied layouts or branding.\n\nThe current foundation supports saved preferences, tray access and shortcuts. Connections extends the same utility language to explicit ChatGPT account selection, browser-based sign-in, and permissioned API fallback settings. The meeting surface adds permissioned local setup, explicit capture states, retained local context, and finalized transcript provenance. Backend integration, live provider acceptance, and Windows-native behavior remain explicit until verified. Normative pins remain Poppins+Geist Mono, no shadows, customicons, noSparkles, and compactdesktop. Current UI verification passes with no shadows, no runtime errors, and no overflow at the 420px Windows minimum width.",
+    "keyCharacteristics": [
+      "Clarity first",
+      "Poppins UI and Geist Mono code",
+      "Thin borders and tonal separation",
+      "Explicit capture and provider state",
+      "Account selection and permissioned fallback",
+      "Per-meeting consent and retained local transcript"
+    ],
+    "rules": [],
+    "dos": [
+      "Use shared tokens and original geometric icons.",
+      "Preserve accessible focus and reduced motion.",
+      "Show actual availability and context provenance.",
+      "Make account selection, browser sign-in, provider order, model discovery and fallback consent understandable.",
+      "Keep meeting setup, capture state, transcript source/time, and local-save status explicit."
+    ],
+    "donts": [
+      "No shadows, Sparkles or serif fonts.",
+      "No invented statistics, quotas or live functionality.",
+      "Do not copy reference product layouts.",
+      "Do not mark OAuth, credential-vault, model-discovery or Windows-native acceptance complete from a preview screenshot alone.",
+      "Do not treat meeting-active-fixture.png as actual recording; it is root IPC mock proof only.",
+      "Do not claim live capture is proven while native Windows acceptance is pending.",
+      "Keep native sending disabled until a meeting and inference selection are available; preview sending remains disabled."
+    ],
+    "sessionControls": "Session fixture proves explicit discovery/selection, cancellation, failed sign-in recovery, local sign-out feedback and draft preservation at 420px/520px. It is synthetic UI evidence; live OAuth, DPAPI and native Windows acceptance remain unverified.",
+    "streamingResponses": "Native question/speech/retry/cancel controls; fresh automatic consent; per-attempt stale protection; GFM and bounded lazy Shiki JS highlighting from existing tokens; safe native web links; no remote images. Response fixtures are synthetic, not Windows runtime proof."
+  }
+}

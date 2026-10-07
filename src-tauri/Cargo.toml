@@ -1,0 +1,65 @@
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+description = "Private local-first meeting assistant"
+license = "LicenseRef-Private"
+
+[lib]
+name = "harness_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "harness"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-autostart", "dep:tauri-plugin-window-state", "dep:tauri-plugin-log", "dep:tauri-plugin-opener"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["net", "time", "sync", "rt-multi-thread", "io-util"] }
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+sha2 = "0.10"
+getrandom = "0.3"
+jsonwebtoken = "9"
+zeroize = "1"
+futures-util = "0.3"
+whisper-rs = { version = "0.16", default-features = false }
+webrtc-vad = "0.4"
+rusqlite = { version = "0.38", features = ["bundled"] }
+log = "0.4"
+tauri = { version = "2", optional = true, features = ["tray-icon"] }
+tauri-plugin-global-shortcut = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
+tauri-plugin-autostart = { version = "2", optional = true }
+tauri-plugin-window-state = { version = "2", optional = true }
+tauri-plugin-log = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+
+[dev-dependencies]
+hound = "3.5"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.25"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Multimedia",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_Security_Cryptography",
+    "Win32_System_Memory",
+    "Win32_Storage_FileSystem",
+] }

@@ -1,0 +1,43 @@
+.history { display: grid; gap: var(--space-5); color: var(--text-primary); }
+.history-heading, .history-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+.history h1 { margin: 0; }
+.history h2 { margin: 0; font-size: var(--font-size-lg); font-weight: var(--font-weight-strong); overflow-wrap: anywhere; }
+.history p { margin: 0; }
+.history-heading p, .history-meta, .history-kicker, .meeting-row-main span { color: var(--text-secondary); font-size: var(--font-size-sm); }
+.history-heading p { margin-top: var(--space-2); }
+.history-kicker { color: var(--text-muted); font-family: var(--font-code); font-size: var(--font-size-xs); text-transform: uppercase; letter-spacing: .04em; margin-bottom: var(--space-2) !important; }
+.history-meta { margin-top: var(--space-2) !important; }
+.history-search > svg { width: var(--icon-size); height: var(--icon-size); flex: none; }
+.history-message { color: var(--text-secondary); font-size: var(--font-size-sm); }
+.history-search-hint { color: var(--text-muted); font-size: var(--font-size-xs); }
+.history-error { color: var(--danger); }
+.meeting-list { display: grid; border-top: 1px solid var(--border-subtle); }
+.meeting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto var(--space-4); gap: var(--space-3); align-items: center; width: 100%; padding: var(--space-3) 0; text-align: left; color: inherit; background: transparent; border: 0; border-bottom: 1px solid var(--border-subtle); }
+.meeting-row:hover:not(:disabled), .meeting-row.selected { background: var(--surface-hover); }
+.meeting-row-main { display: grid; min-width: 0; gap: var(--space-1); }
+.meeting-row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--font-weight-medium); }
+.meeting-status, .history-source, .history-time { font-family: var(--font-code); font-size: var(--font-size-xs); }
+.meeting-status { color: var(--text-muted); }
+.meeting-status.completed { color: var(--success); }
+.meeting-status.interrupted { color: var(--danger); }
+.meeting-row > svg { width: var(--space-4); color: var(--text-muted); }
+.history-text-button { min-height: var(--control-compact); width: fit-content; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: var(--font-size-sm); text-decoration: underline; text-underline-offset: 3px; }
+.history-text-button:hover:not(:disabled) { color: var(--text-primary); }
+.history-detail { display: grid; gap: var(--space-4); border-top: 1px solid var(--border-subtle); padding-top: var(--space-5); }
+.history-search { display: flex; align-items: center; gap: var(--space-2); min-height: var(--control-height); padding: 0 var(--space-3); background: var(--surface-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-md); }
+.history-search > svg { color: var(--text-secondary); }
+.history-search input { min-width: 0; flex: 1; height: var(--control-compact); color: var(--text-primary); background: transparent; border: 0; }
+.history-search-submit, .history-clear { min-height: var(--control-compact); border: 0; background: transparent; color: var(--accent); font-size: var(--font-size-sm); white-space: nowrap; }
+.history-clear { color: var(--text-secondary); }
+.history-search-submit:disabled { color: var(--text-muted); }
+.history-transcript { display: grid; gap: var(--space-3); max-height: 360px; overflow: auto; border-top: 1px solid var(--border-subtle); padding-top: var(--space-4); }
+.history-line { display: grid; grid-template-columns: 52px 36px minmax(0, 1fr); gap: var(--space-2); align-items: start; font-size: var(--font-size-sm); }
+.history-source, .history-time { color: var(--text-secondary); }
+.history-time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+@media (max-width: 460px) {
+  .meeting-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .meeting-row > svg { display: none; }
+  .history-search { flex-wrap: wrap; padding-block: var(--space-2); }
+  .history-search input { order: 1; flex-basis: calc(100% - 28px); }
+  .history-search-submit, .history-clear { order: 2; }
+}

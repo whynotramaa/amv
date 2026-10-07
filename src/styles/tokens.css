@@ -1,0 +1,56 @@
+@font-face { font-family: Poppins; font-style: normal; font-weight: 400; font-display: swap; src: url('../assets/fonts/poppins-latin-400-normal.woff2') format('woff2'); }
+@font-face { font-family: Poppins; font-style: normal; font-weight: 500; font-display: swap; src: url('../assets/fonts/poppins-latin-500-normal.woff2') format('woff2'); }
+@font-face { font-family: Poppins; font-style: normal; font-weight: 600; font-display: swap; src: url('../assets/fonts/poppins-latin-600-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Geist Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('../assets/fonts/geist-mono-latin-400-normal.woff2') format('woff2'); }
+
+:root {
+  color-scheme: dark;
+  --font-ui: Poppins, 'Segoe UI', sans-serif;
+  --font-code: 'Geist Mono', ui-monospace, monospace;
+  font-family: var(--font-ui);
+  font-synthesis: none;
+  --background: #111316;
+  --surface: #191c20;
+  --surface-elevated: #22262b;
+  --surface-hover: #2a3036;
+  --surface-active: #303842;
+  --text-primary: #e9edf2;
+  --text-secondary: #b6bec9;
+  --text-tertiary: #9aa5b3;
+  --text-muted: #8e99a8;
+  --border-subtle: #a7b3c21a;
+  --border-default: #454e5a;
+  --accent: #b2c9e5;
+  --accent-muted: #2c3b4d;
+  --danger: #f0aaa6;
+  --success: #b3d1be;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 48px;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 26px;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-strong: 600;
+  --line-height: 1.5;
+  --icon-size: 18px;
+  --control-height: 40px;
+  --control-compact: 32px;
+  --focus-color: var(--accent);
+  --focus-width: 2px;
+  --focus-offset: 2px;
+  --motion-duration: 180ms;
+  --motion-ease: cubic-bezier(.2, .8, .2, 1);
+}

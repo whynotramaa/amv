@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src-tauri/target/
+*.log
+.impeccable/mocks/
+.impeccable/review/
+src-tauri/models/*.bin
+src-tauri/models/*.part
+.claude/
