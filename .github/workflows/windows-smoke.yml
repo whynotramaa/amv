@@ -10,14 +10,23 @@ jobs:
   smoke:
     runs-on: windows-latest
     steps:
-      - name: Download latest installer
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.0'
+      - name: Build installer without capture protection
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $id = gh run list -R $env:GITHUB_REPOSITORY -w "Windows build" -s success -L 1 --json databaseId -q '.[0].databaseId'
-          Write-Host "Using run $id"
-          gh run download $id -R $env:GITHUB_REPOSITORY -n Harness-Setup-x64 -D installer
+          (Get-Content src-tauri/tauri.conf.json -Raw) -replace '"contentProtected": true', '"contentProtected": false' | Set-Content src-tauri/tauri.conf.json
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          ./scripts/package.ps1 -SkipChecks
+          New-Item -ItemType Directory -Force installer | Out-Null
+          Copy-Item dist/Harness-Setup-x64.exe installer/
       - name: Install, launch and capture
         shell: pwsh
         run: |
@@ -63,6 +72,7 @@ jobs:
           Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
           $root = [Windows.Automation.AutomationElement]::RootElement
           $cond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty, $app.Id)
+          [void]$root.FindAll('Descendants', $cond); Start-Sleep 3
           foreach ($w in $root.FindAll('Children', $cond)) {
             Write-Host "== UIA window '$($w.Current.Name)'"
             foreach ($e in $w.FindAll('Descendants', [Windows.Automation.Condition]::TrueCondition)) {
