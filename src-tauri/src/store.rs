@@ -952,7 +952,11 @@ impl Store {
 
     pub fn latest_finalized_id(&self, meeting_id: i64) -> Result<Option<i64>> {
         validate_id(meeting_id, "meeting")?;
-        Ok(self.conn.query_row("SELECT MAX(id) FROM transcript_segments WHERE meeting_id = ?1 AND is_final = 1", [meeting_id], |row| row.get(0))?)
+        Ok(self.conn.query_row(
+            "SELECT MAX(id) FROM transcript_segments WHERE meeting_id = ?1 AND is_final = 1",
+            [meeting_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn prepare_transcript_request(
@@ -2927,7 +2931,7 @@ mod tests {
                 1,
                 "é",
             )?;
-            store.insert_finalized_transcript(
+            let mic = store.insert_finalized_transcript(
                 meeting.id,
                 2,
                 TranscriptSource::Microphone,
@@ -2942,8 +2946,8 @@ mod tests {
             let pending = store
                 .prepare_transcript_request(meeting.id, 100, 64 * 1024)?
                 .unwrap();
-            assert_eq!(pending.user_text, "é");
-            assert_eq!(pending.segment_ids, vec![first.id]);
+            assert_eq!(pending.user_text, "é\nmic");
+            assert_eq!(pending.segment_ids, vec![first.id, mic.id]);
             let request_id = pending.id;
             store.insert_finalized_transcript(
                 meeting.id,
@@ -2959,7 +2963,7 @@ mod tests {
             let mut store = Store::open(&path)?;
             let reopened = store.pending_request(request_id)?.unwrap();
             assert_eq!(reopened.id, request_id);
-            assert_eq!(reopened.user_text, "é");
+            assert_eq!(reopened.user_text, "é\nmic");
             store.begin_request(request_id)?;
             let reader = Store::open(&path)?;
             assert_eq!(
@@ -3000,7 +3004,7 @@ mod tests {
             let next = store
                 .prepare_transcript_request(meeting.id, 100, 64 * 1024)?
                 .unwrap();
-            assert_eq!(next.user_text, "late system");
+            assert_eq!(next.user_text, "late system\nlate mic");
             store.begin_request(next.id)?;
             store.complete_request(
                 next.id,

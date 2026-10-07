@@ -2697,7 +2697,39 @@ fn report_window_error(result: tauri::Result<()>) {
     }
 }
 
+// The release build has no console, so a startup failure must be shown and kept on disk.
+fn report_fatal(message: &str) {
+    log::error!("component=app action=fatal error={message}");
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("local.harness.desktop");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("startup-error.txt"), message);
+    eprintln!("Harness couldn't start: {message}");
+    #[cfg(windows)]
+    {
+        use windows::core::HSTRING;
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let text = HSTRING::from(format!(
+            "Harness couldn't start.\n\n{message}\n\nDetails were saved to {}",
+            dir.join("startup-error.txt").display()
+        ));
+        unsafe {
+            MessageBoxW(None, &text, &HSTRING::from("Harness"), MB_OK | MB_ICONERROR);
+        }
+    }
+}
+
 pub fn run() {
+    std::panic::set_hook(Box::new(|info| {
+        let message = format!("{info}");
+        if std::thread::current().name() == Some("main") {
+            report_fatal(&message);
+        } else {
+            log::error!("component=app action=panic error={message}");
+        }
+    }));
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -2755,7 +2787,8 @@ pub fn run() {
                                     match dispatch_response(app, id, None, false, false, None) {
                                         Ok(Some(_)) => {}
                                         Ok(None) => {
-                                            let _ = app.emit("app-notice", "No new speech to send.");
+                                            let _ =
+                                                app.emit("app-notice", "No new speech to send.");
                                         }
                                         Err(error) => {
                                             let _ = app.emit("app-notice", error);
@@ -3035,8 +3068,7 @@ pub fn run() {
             }
         });
     if let Err(error) = builder.run(tauri::generate_context!()) {
-        log::error!("component=app action=start_failed error={error}");
-        eprintln!("Harness couldn't start: {error}");
+        report_fatal(&error.to_string());
         std::process::exit(1);
     }
 }
