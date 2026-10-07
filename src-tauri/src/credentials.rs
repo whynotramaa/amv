@@ -65,6 +65,41 @@ impl Credentials {
         Ok(Some(Zeroizing::new(std::mem::take(&mut value.key))))
     }
 
+    /// A private, URL-bound accounting identity; the pepper remains in DPAPI.
+    pub fn api_key_id(
+        &self,
+        config: &crate::providers::ProviderConfig,
+        key: &str,
+    ) -> Result<String> {
+        config.validate()?;
+        if key.is_empty() || key.len() > 16 * 1024 || key.chars().any(char::is_control) {
+            bail!("Invalid API key");
+        }
+        static PEPPER_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = PEPPER_GATE
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Credential identity lock unavailable"))?;
+        let pepper = match self.get("api-usage-pepper")? {
+            Some(value) => value,
+            None => {
+                let mut value = Zeroizing::new(vec![0u8; 32]);
+                getrandom::fill(&mut value)
+                    .map_err(|_| anyhow::anyhow!("Credential identity randomness unavailable"))?;
+                self.set("api-usage-pepper", &value)?;
+                value
+            }
+        };
+        if pepper.len() != 32 {
+            bail!("Invalid credential identity record");
+        }
+        Ok(derive_api_key_id(
+            &pepper,
+            config.provider.credential_target(),
+            config.endpoint("")?.as_str(),
+            key,
+        ))
+    }
+
     pub fn set(&self, slot: &str, secret: &[u8]) -> Result<()> {
         validate_slot(slot)?;
         if secret.is_empty() || secret.len() > 64 * 1024 {
@@ -154,6 +189,19 @@ impl Credentials {
     fn path(&self, slot: &str) -> PathBuf {
         self.directory.join(format!("{slot}.dpapi"))
     }
+}
+
+fn derive_api_key_id(pepper: &[u8], provider: &str, url: &str, key: &str) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"Harness-API-usage-v1");
+    hash.update(pepper);
+    for part in [provider, url, key] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash.finalize())
 }
 
 fn validate_slot(slot: &str) -> Result<()> {
@@ -278,6 +326,24 @@ mod tests {
             .is_err());
     }
 
+    #[test]
+    fn accounting_identity_is_stable_and_bound() {
+        let id = derive_api_key_id(&[1; 32], "gemini", "https://example.com/v1/", "key");
+        assert_eq!(id.len(), 43);
+        assert_eq!(
+            id,
+            derive_api_key_id(&[1; 32], "gemini", "https://example.com/v1/", "key")
+        );
+        for other in [
+            derive_api_key_id(&[2; 32], "gemini", "https://example.com/v1/", "key"),
+            derive_api_key_id(&[1; 32], "deepseek", "https://example.com/v1/", "key"),
+            derive_api_key_id(&[1; 32], "gemini", "https://other.com/v1/", "key"),
+            derive_api_key_id(&[1; 32], "gemini", "https://example.com/v1/", "other"),
+        ] {
+            assert_ne!(id, other);
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_vault_roundtrip_replaces_binds_and_deletes() {
@@ -330,9 +396,24 @@ mod tests {
         changed.base_url.push_str("changed/");
         assert!(credentials.api_key(&changed).unwrap().is_none());
 
+        let identity = credentials.api_key_id(&config, "replacement-key").unwrap();
+        assert_ne!(
+            identity,
+            credentials.api_key_id(&changed, "replacement-key").unwrap()
+        );
         credentials.delete(slot).unwrap();
         assert!(credentials.api_key(&config).unwrap().is_none());
         credentials.delete(slot).unwrap();
         assert!(credentials.get(slot).unwrap().is_none());
+        credentials.set_api_key(&config, "replacement-key").unwrap();
+        assert_eq!(
+            identity,
+            credentials.api_key_id(&config, "replacement-key").unwrap()
+        );
+        credentials.delete(slot).unwrap();
+        assert_eq!(
+            credentials.get("api-usage-pepper").unwrap().unwrap().len(),
+            32
+        );
     }
 }

@@ -219,3 +219,17 @@ Documents opens a separate 900×700 window (minimum 640×480), sharing the exist
 Source reference is the default and answer permission starts off. Changed/missing source status, explicit reindexing, failure preservation and destructive confirmation explain the actual persistence behavior. Close waits during a change; native close destroys this management WebView. Mocked UI and source checks do not establish native dialog/rendering or inference acceptance.
 
 The compact assistant preserves the newer chat composer and opacity control. Starting capture opens a restrained permissioned meeting form; finalized MIC/SYSTEM context is collapsible. Microphone question inclusion remains explicit. Send speech remains available for retained meetings, and output-mode copy states that preference changes apply to the next meeting or new chat.
+
+## Prepared request inspection
+
+ResponseView lazily opens ContextInspector on explicit request. It uses shared tokens, Poppins, Geist Mono measurements, subtle dividers and native disclosure controls. One attempt is retained at a time; closing unmounts it. Local budgets are labeled estimates, and the view distinguishes prepared requests from confirmed provider receipt. Malformed records and lookup failures show recoverable messages; generation guards reject replies after close or context switches.
+
+Connections retains identity-only sign-ins and offers Manage ChatGPT usage and Authorize plan usage. Model controls are hidden until direct plan permission exists. No shadows, new fonts or decorative icons were added. Collaborative-browser context fixtures are synthetic IPC evidence only.
+
+## Local usage
+
+UsageView opens lazily through settings, with one report retained at a time. Provider/account sections use native details for today/seven-day totals and individual attempts. Measurements use Geist Mono; interface text remains Poppins. Existing spacing/control/border tokens are reused; no new colors or shadows. Explicit refresh and older/latest navigation replace data without timers. Missing counts, partial totals, interrupted work and failed lookups are visible. Context inspection now labels public account attribution or its absence in older records. Synthetic collaborative-browser fixtures do not prove native/provider behavior.
+
+## API budgets
+
+Usage progressively opens a lazy API budgets surface with one native disclosure per configured provider. Shared spacing, control heights, focus, Poppins/Geist Mono, neutral surfaces and thin borders remain unchanged. Prices use exact decimal USD input; optional limits show blank/zero meaning next to their controls. Unknown usage, missing keys/models, blocked reasons and local reset time remain explicit. Failed saves preserve drafts; refresh asks before discarding edits. No polling, quota bar, shadow, decorative icon or new dependency is added. Anonymous counter retention and admission-limit overshoot are explained in a native disclosure. Browser fixtures are synthetic evidence only.

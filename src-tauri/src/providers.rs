@@ -43,9 +43,6 @@ pub async fn discover_models(
 ) -> Result<Vec<ModelInfo>> {
     use futures_util::StreamExt;
     let request = async {
-        if chatgpt && endpoint.as_str() != "https://api.openai.com/v1/models" {
-            bail!("Invalid ChatGPT model endpoint");
-        }
         let request = client.get(endpoint).bearer_auth(bearer);
         let response = request
             .send()

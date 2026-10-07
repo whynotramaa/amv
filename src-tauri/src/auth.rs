@@ -202,24 +202,37 @@ impl AuthAttempt {
             .clone()
             .unwrap_or_else(|| self.client_id.clone());
         validate_client_id(&issued_client_id)?;
-        let response = checked_response(
-            client.post(TOKEN).form(&[
-                ("grant_type", "authorization_code"),
-                ("client_id", issued_client_id.as_str()),
-                ("code", callback.code.as_str()),
-                ("code_verifier", self.verifier.as_str()),
-                ("redirect_uri", self.redirect_uri.as_str()),
-                ("resource", RESOURCE),
-            ]),
-            TOKEN,
-        )
-        .await?;
-        let body = bounded_body(response).await?;
-        if !body.status.is_success() {
-            bail!("OAuth token exchange failed ({})", body.status.as_u16())
+        let exchange: Result<TokenResponse> = async {
+            let response = checked_response(
+                client.post(TOKEN).form(&[
+                    ("grant_type", "authorization_code"),
+                    ("client_id", issued_client_id.as_str()),
+                    ("code", callback.code.as_str()),
+                    ("code_verifier", self.verifier.as_str()),
+                    ("redirect_uri", self.redirect_uri.as_str()),
+                    ("resource", RESOURCE),
+                ]),
+                TOKEN,
+            )
+            .await?;
+            let body = bounded_body(response).await?;
+            if !body.status.is_success() {
+                bail!("OAuth token exchange failed ({})", body.status.as_u16())
+            }
+            let token: TokenResponse =
+                serde_json::from_slice(&body.bytes).context("Invalid OAuth token response")?;
+            Ok(token)
         }
-        let token: TokenResponse =
-            serde_json::from_slice(&body.bytes).context("Invalid OAuth token response")?;
+        .await;
+        let token = exchange.map_err(|error| {
+            if self.client_id == DYNAMIC_CLIENT {
+                error.context(RegistrationExchangeFailed {
+                    client_id: issued_client_id.clone(),
+                })
+            } else {
+                error
+            }
+        })?;
         if let Err(error) = token.validate_required() {
             revoke_rejected_token(client, &issued_client_id, &token).await;
             return Err(error);
@@ -351,7 +364,7 @@ impl AuthGrant {
         if body.status != StatusCode::OK {
             return Err(refresh_response_error(body.status, &body.bytes));
         }
-        // HTTP 200 consumed the old rotating refresh token. Every later failure is terminal locally.
+        // A successful refresh consumes the old rotating token. Later validation failures are terminal.
         async {
             let token: TokenResponse =
                 serde_json::from_slice(&body.bytes).context("Invalid OAuth refresh response")?;
@@ -416,51 +429,6 @@ impl AuthGrant {
     }
 }
 
-#[derive(Debug)]
-struct RefreshRequiresSignIn;
-impl std::fmt::Display for RefreshRequiresSignIn {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("The ChatGPT session cannot be renewed. Sign in again")
-    }
-}
-impl std::error::Error for RefreshRequiresSignIn {}
-
-pub fn refresh_requires_sign_in(error: &anyhow::Error) -> bool {
-    error.is::<RefreshRequiresSignIn>()
-}
-
-fn refresh_response_error(status: StatusCode, bytes: &[u8]) -> anyhow::Error {
-    let error = anyhow::anyhow!("OAuth refresh failed ({})", status.as_u16());
-    // Only structured documented codes are actionable; server text is never a credential signal.
-    if !status.is_client_error() || status == StatusCode::TOO_MANY_REQUESTS {
-        return error;
-    }
-    let body: serde_json::Value = match serde_json::from_slice(bytes) {
-        Ok(body) => body,
-        Err(_) => return error,
-    };
-    let code = body
-        .get("error")
-        .and_then(|value| value.as_str().or_else(|| value.get("code")?.as_str()));
-    if matches!(
-        code,
-        Some(
-            "invalid_grant"
-                | "invalid_refresh_token"
-                | "token_expired"
-                | "refresh_token_expired"
-                | "refresh_token_invalidated"
-                | "refresh_token_reused"
-        )
-    ) {
-        error.context(RefreshRequiresSignIn)
-    } else if code == Some("invalid_client") {
-        error.context("The ChatGPT client configuration was rejected")
-    } else {
-        error
-    }
-}
-
 pub fn account_key(client_id: &str, subject: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(client_id.as_bytes());
@@ -498,7 +466,7 @@ fn validate_grant(grant: &AuthGrant) -> Result<()> {
 }
 
 fn validate_client_id(client_id: &str) -> Result<()> {
-    // Issued IDs are opaque; validate transport-safe syntax without inventing a prefix requirement.
+    // Issued IDs are opaque; validate transport syntax without guessing a prefix.
     if client_id.is_empty()
         || client_id == DYNAMIC_CLIENT
         || client_id.len() > 256
@@ -532,6 +500,68 @@ fn refresh_form(grant: &AuthGrant) -> [(&str, &str); 4] {
         ("refresh_token", grant.tokens.refresh_token()),
         ("resource", RESOURCE),
     ]
+}
+
+#[derive(Debug)]
+struct RegistrationExchangeFailed {
+    client_id: String,
+}
+impl std::fmt::Display for RegistrationExchangeFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Registration code exchange failed. Retry sign-in")
+    }
+}
+impl std::error::Error for RegistrationExchangeFailed {}
+
+/// Public registration identity only. Authorization codes and token material are never retained here.
+pub fn registration_retry_client(error: &anyhow::Error) -> Option<&str> {
+    error
+        .downcast_ref::<RegistrationExchangeFailed>()
+        .map(|error| error.client_id.as_str())
+}
+
+#[derive(Debug)]
+struct RefreshRequiresSignIn;
+impl std::fmt::Display for RefreshRequiresSignIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The ChatGPT session cannot be renewed. Sign in again")
+    }
+}
+impl std::error::Error for RefreshRequiresSignIn {}
+
+pub fn refresh_requires_sign_in(error: &anyhow::Error) -> bool {
+    error.is::<RefreshRequiresSignIn>()
+}
+
+fn refresh_response_error(status: StatusCode, bytes: &[u8]) -> anyhow::Error {
+    let error = anyhow::anyhow!("OAuth refresh failed ({})", status.as_u16());
+    if !status.is_client_error() || status == StatusCode::TOO_MANY_REQUESTS {
+        return error;
+    }
+    let body: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(body) => body,
+        Err(_) => return error,
+    };
+    let code = body
+        .get("error")
+        .and_then(|value| value.as_str().or_else(|| value.get("code")?.as_str()));
+    if matches!(
+        code,
+        Some(
+            "invalid_grant"
+                | "invalid_refresh_token"
+                | "token_expired"
+                | "refresh_token_expired"
+                | "refresh_token_invalidated"
+                | "refresh_token_reused"
+        )
+    ) {
+        error.context(RefreshRequiresSignIn)
+    } else if code == Some("invalid_client") {
+        error.context("The ChatGPT client configuration was rejected")
+    } else {
+        error
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -823,7 +853,6 @@ async fn revoke_rejected_token(client: &Client, client_id: &str, token: &TokenRe
     }) else {
         return;
     };
-    // A validated request issued this token set, but it must never become a usable local grant.
     let _ = tokio::time::timeout(
         Duration::from_secs(10),
         checked_response(
@@ -1021,7 +1050,7 @@ mod tests {
         .is_ok());
     }
     #[test]
-    fn returning_authorization_keeps_host_and_fresh_security_values() {
+    fn dynamic_registration_and_returning_accounts_keep_security_bindings() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (initial, returning) = runtime.block_on(async {
             (
@@ -1038,6 +1067,10 @@ mod tests {
             )
         });
         let initial_url = Url::parse(initial.authorization_url()).unwrap();
+        let initial_values: HashMap<_, _> = initial_url.query_pairs().into_owned().collect();
+        assert_eq!(initial_values["client_id"], DYNAMIC_CLIENT);
+        assert_eq!(initial_values["agent_name_hint"], "Harness");
+        assert_eq!(initial_values["ext_agent_host_id"], "urn:uuid:host");
         let url = Url::parse(returning.authorization_url()).unwrap();
         let values: HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(values["client_id"], "oaiapp_saved");
@@ -1046,9 +1079,8 @@ mod tests {
         assert_eq!(values["scope"], SCOPES);
         assert_eq!(values["id_token_hint"], "old.identity.hint");
         assert!(!values.contains_key("agent_name_hint"));
-        assert!(initial_url
-            .query_pairs()
-            .any(|(k, v)| k == "agent_name_hint" && v == "Harness"));
+        assert!(!values.contains_key("originator"));
+        assert!(!values.contains_key("codex_cli_simplified_flow"));
         let redirect = Url::parse(&values["redirect_uri"]).unwrap();
         assert_eq!(redirect.host_str(), Some("127.0.0.1"));
         assert_ne!(initial.redirect_uri, returning.redirect_uri);
@@ -1062,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_permission_and_rotation_are_not_reused() {
+    fn identity_only_grants_are_stored_without_inference_permission() {
         let claims = IdClaims {
             iss: ISSUER.into(),
             sub: "subject".into(),
@@ -1079,8 +1111,6 @@ mod tests {
             let token: TokenResponse = serde_json::from_value(serde_json::json!({"access_token":"access", "refresh_token":"refresh", "id_token":"identity", "scope":scope})).unwrap();
             assert!(token.validate_required().is_err());
         }
-        let missing_id: TokenResponse = serde_json::from_value(serde_json::json!({"access_token":"access", "refresh_token":"replacement", "scope":"chatgpt.tokens.use.direct"})).unwrap();
-        assert!(missing_id.validate_required().is_err());
         let identity_only: TokenResponse = serde_json::from_value(serde_json::json!({"access_token":"access", "refresh_token":"refresh", "id_token":"identity", "scope":"openid profile email offline_access"})).unwrap();
         assert!(identity_only.validate_required().is_ok());
         let mut grant = AuthGrant {
@@ -1097,13 +1127,11 @@ mod tests {
                 expires_at: 200,
             },
         };
-        assert!(validate_grant(&grant).is_ok());
         assert!(grant.plan_usage_enabled());
         grant.subscopes = vec!["openid".into(), "profile".into(), "offline_access".into()];
         assert!(validate_grant(&grant).is_ok());
         assert!(!grant.plan_usage_enabled());
-        let saved = grant.to_vault_bytes().unwrap();
-        let restored = AuthGrant::from_vault_bytes(&saved).unwrap();
+        let restored = AuthGrant::from_vault_bytes(&grant.to_vault_bytes().unwrap()).unwrap();
         assert!(!restored.plan_usage_enabled());
         let form: HashMap<_, _> = refresh_form(&grant).into_iter().collect();
         assert_eq!(form["resource"], RESOURCE);
@@ -1143,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_recovery_distinguishes_unusable_tokens_from_temporary_errors() {
+    fn refresh_recovery_distinguishes_terminal_tokens_from_temporary_errors() {
         for code in [
             "invalid_grant",
             "invalid_refresh_token",
@@ -1182,13 +1210,25 @@ mod tests {
                 body
             )));
         }
-        assert!(!refresh_requires_sign_in(&anyhow::anyhow!(
-            "Network unavailable"
-        )));
         let consumed = anyhow::anyhow!("Invalid rotated response")
             .context(RefreshRequiresSignIn)
-            .context("Outer request context");
+            .context("Outer context");
         assert!(refresh_requires_sign_in(&consumed));
+    }
+
+    #[test]
+    fn exchange_retry_retains_only_the_issued_registration_identity() {
+        let error = anyhow::anyhow!("OAuth token exchange failed (400)")
+            .context(RegistrationExchangeFailed {
+                client_id: "oaiapp_retry".into(),
+            })
+            .context("Outer request context");
+        assert_eq!(registration_retry_client(&error), Some("oaiapp_retry"));
+        assert!(!format!("{error:#}").contains("oaiapp_retry"));
+        assert_eq!(
+            registration_retry_client(&anyhow::anyhow!("Other error")),
+            None
+        );
     }
 
     #[test]

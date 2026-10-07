@@ -41,7 +41,7 @@ On a Windows x64 build machine:
 .\scripts\package.ps1
 ```
 
-The script runs checks and creates `dist/Harness-Setup-x64.exe` and its SHA-256 hash. NSIS is configured for per-user installation with a downloaded WebView2 bootstrapper. Installation may need network access if WebView2 is absent. Build preparation verifies and bundles the English Parakeet TDT int8 ONNX model and its license. The installed engine uses a caller-supplied local model path and never downloads models or runs Python. Packaging is not equivalent to the final clean-machine product acceptance test.
+The script runs checks and creates `dist/Harness-Setup-x64.exe` and its SHA-256 hash. NSIS is configured for per-user installation with the offline WebView2 installer. Build preparation verifies and bundles the English Parakeet TDT int8 ONNX model and its license. The installed engine uses a caller-supplied local model path and never downloads models or runs Python. Packaging is not equivalent to the final clean-machine product acceptance test.
 
 Closing the window hides Harness while capture continues. The tray's Quit command stops inference, preserves partial output, flushes finalized speech, unloads the model, and waits for sign-in credential cleanup before exiting. `Ctrl+Space` toggles the assistant; `Ctrl+Shift+Enter` sends unsent finalized system speech available at the press, in bounded batches. Automatic mode requires fresh remote-send consent at each meeting and pauses after failure or cancellation. Preferences allow changing both. An unavailable shortcut produces an actionable error rather than preventing tray access.
 
@@ -73,7 +73,7 @@ An earlier Whisper decoder probe is historical evidence only. It does not measur
 
 Open Memory from the tray or the book icon in the assistant. It opens a separate 900×700 management window. Add a manual project, person, organization, preference, note, decision, experience, education or term. Each entry retains its manual source and creation/update times. Search, edits and deletion stay local.
 
-New entries default to local only. Enable an entry explicitly to allow relevant excerpts in authorized answers, including consented fallback providers. Local FTS5/BM25 retrieves at most eight enabled entries and 16 KiB of body text before the context compiler applies its budget. Title/project terms receive extra lexical weight. This is lexical retrieval; embeddings, reranking, related-entity records and inspectable sent context remain unfinished.
+New entries default to local only. Enable an entry explicitly to allow relevant excerpts in authorized answers, including consented fallback providers. Local FTS5/BM25 retrieves at most eight enabled entries and 16 KiB of body text before the context compiler applies its budget. Title/project terms receive extra lexical weight. This is lexical retrieval; embeddings, reranking and related-entity records remain unfinished.
 
 The window confirms before discarding unsaved changes, remains open during saves, and destroys its WebView when closed. Database and UI pages replace prior results and stay bounded. Run `npm run check:memory` with the same browser setup as the response fixture; it mocks IPC and does not prove Windows window behavior.
 
@@ -83,7 +83,7 @@ With `npm run dev` running, use `npm run check:ui`. Install Playwright Chromium 
 
 After `npm run build`, use `HARNESS_PRODUCTION_FIXTURE=1 npm run check:ui` to run the same IPC fixture against production assets with the native content security policy. This verifies CSS-based syntax colors without permitting inline styles.
 
-The compiler currently uses a conservative application cap and byte-based estimate. Discovered model-specific limits, exact tokenizers, retrieval, inspectable compiled context, usage pages, and the remaining PLAN features are still pending. See REQUIREMENTS.md and PROGRESS.md.
+The compiler currently uses a conservative application cap and byte-based estimate. Discovered model-specific limits, exact tokenizers, hybrid retrieval, named profiles and the remaining PLAN features are still pending. See REQUIREMENTS.md and PROGRESS.md.
 
 ## Local documents
 
@@ -93,4 +93,28 @@ New imports are local only. Enable a document explicitly for relevant authorized
 
 Run `npm run check:documents` against the development preview for the mocked interface checks. Native dialogs, copies, close behavior and actual inference still need Windows acceptance.
 
-Current sign-in source uses a fixed public OAuth client ID rather than the agreed dynamic registration. Third-party eligibility and error-free sign-in remain unverified; this is an open integration gap.
+Sign-in uses the official dynamic registration flow with a stable installation host ID, PKCE, state, nonce and a loopback callback. Returning accounts reuse their issued public client ID. Identity-only authorization remains signed in, with an explicit Manage ChatGPT usage / Authorize plan usage action. Models and inference require direct plan permission, including after refresh. Known terminal refresh failures clear unusable credentials; temporary failures preserve them. A failed first token exchange retains its issued registration ID for a fresh in-app retry. Unfinished-registration retry state is process-local and is lost on restart. Third-party eligibility and live sign-in remain unverified.
+
+## Inspect request context
+
+Choose Inspect request context below an answer to load one locally saved provider attempt. The inspector shows application instructions, message history, new speech/question, source provenance, estimated token budgets and excluded records. Older/latest controls page attempts without retaining the entire history. Closing releases the loaded record.
+
+Schema9 saves the compiled request before sending; a persistence failure prevents that attempt from sending. This is prepared context, not proof of provider receipt. Records contain no bearer credentials or absolute document paths and are deleted with their meeting. Provider-specific JSON formatting may differ. New attempts also retain a public account digest for local attribution. Named profiles and standalone context deletion remain pending.
+
+For the collaborative-browser regression, open `/.impeccable/mocks/context.html` on the development server and run `window.selfCheck()` in preview evaluation. It mocks IPC and checks explicit loading, paging, malformed records, failures, retry and stale context switching. Add `?view=connections` to check retained identity-only sign-in, permission actions and hidden model discovery. It proves no native/provider behavior.
+
+## Local usage history
+
+Open Settings → Usage. The page shows provider/account attempts for today and the last seven local calendar days, returned input/output/cached tokens, missing input/output counts, pending attempts and limit hits. Recent/older pages retain at most20records and replace the prior page. Refresh is explicit; no polling runs while the page is closed.
+
+Schema10 records an attempt before invoking inference and finalizes it on success, failure or cancellation. Reported counts survive incomplete/failed streams, including terminal Responses usage and compatible chunks that include both text and usage. Missing values remain unknown. Startup marks unfinished attempts interrupted. Prepared contexts, account digests and receipts share meeting deletion cascades. Older versions are not backfilled with guessed statistics. “Fallback selected” records a decision; cancellation or preparation failure may prevent the next attempt from starting.
+
+API attempts show estimated USD cost from user-entered model prices captured at attempt start. Open Usage → API budgets to set current Gemini/DeepSeek key limits and input/output/cached prices per million tokens. Blank limits disable caps; zero blocks new attempts. Prices default to unknown. Changing a price affects future attempts only. ChatGPT plan allowance and reset times remain unavailable.
+
+Schema11 gates sending against known local daily input+output tokens and estimated cost. A pending attempt blocks capped keys; missing usage or prices block the corresponding enabled cap conservatively. Legacy API usage cannot be assigned to a key and blocks capped keys for that local day. Caps reset at local midnight. An ongoing request may exceed a cap; these are local admission controls, not provider billing limits.
+
+A private DPAPI-protected pepper derives stable provider/endpoint/key identifiers without saving keys to SQLite or React. Removing and re-adding the same key at the same endpoint preserves its identity. Meeting deletion removes detailed history but retains anonymous accounting and legacy markers, so deletion cannot reset caps. Completed counters expire after eight local calendar days; live pending attempts remain until finalization or restart recovery. These counters contain no meeting text. The retained history totals are not a permanent billing ledger.
+
+For synthetic IPC checks, open `/.impeccable/mocks/usage.html` on the development server and run `window.selfCheck()` in collaborative-preview evaluation. Add `?preview=1` to verify that browser preview never invokes native usage commands. Windows/provider acceptance still requires a real run.
+
+The budget UI regression is `/.impeccable/mocks/budgets.html`, `window.selfCheck()`. It checks exact USD parsing, missing keys, validation, draft preservation, dirty refresh, malformed records and stale unmount. `?preview=1` verifies native-read isolation. These are synthetic IPC checks, not billing/provider acceptance.

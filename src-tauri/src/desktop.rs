@@ -34,6 +34,7 @@ struct Core {
     login_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     login_in_progress: bool,
     login_generation: u64,
+    pending_registration_client_id: Option<String>,
     oauth_session_gate: Arc<tokio::sync::Mutex<()>>,
     pending_workers: Arc<std::sync::atomic::AtomicUsize>,
     pending_done: Arc<tokio::sync::Notify>,
@@ -78,6 +79,7 @@ struct ResponseController {
 
 #[derive(Clone)]
 struct ProviderSnapshot {
+    credential_id: String,
     provider: String,
     model: String,
     endpoint: url::Url,
@@ -108,7 +110,6 @@ struct AccountState {
     #[serde(flatten)]
     metadata: crate::store::AccountMetadata,
     signed_in: bool,
-    plan_usage_enabled: bool,
 }
 
 fn account_slot(id: &str) -> String {
@@ -118,6 +119,23 @@ fn account_slot(id: &str) -> String {
 
 fn valid_account_id(id: &str) -> Result<(), String> {
     crate::store::validate_account_id(id).map_err(|_| "Invalid account id".into())
+}
+
+fn update_registration_retry(
+    pending: &mut Option<String>,
+    current: u64,
+    attempt: u64,
+    issued: Option<&str>,
+    succeeded: bool,
+) {
+    if current != attempt {
+        return;
+    }
+    if succeeded {
+        *pending = None;
+    } else if let Some(id) = issued {
+        *pending = Some(id.to_owned());
+    }
 }
 
 fn complete_login(
@@ -242,7 +260,10 @@ fn request_compile(
         .collect();
     let microphone = rows
         .iter()
-        .filter(|r| r.source == crate::store::TranscriptSource::Microphone)
+        .filter(|r| {
+            r.source == crate::store::TranscriptSource::Microphone
+                && !pending.segment_ids.contains(&r.id)
+        })
         .map(|r| map(r, "microphone"))
         .collect();
     let history = store
@@ -297,15 +318,6 @@ fn request_compile(
 
 type SelectedAccount = (String, String);
 
-fn account_plan_enabled(core: &Core, id: &str) -> bool {
-    core.credentials
-        .get(&account_slot(id))
-        .ok()
-        .flatten()
-        .and_then(|bytes| crate::auth::AuthGrant::from_vault_bytes(&bytes).ok())
-        .is_some_and(|grant| grant.account_id == id && grant.plan_usage_enabled())
-}
-
 fn provider_snapshots(
     core: &Core,
 ) -> Result<(Option<SelectedAccount>, Vec<ProviderSnapshot>), String> {
@@ -319,8 +331,15 @@ fn provider_snapshots(
             .accounts()
             .map_err(|_| "Couldn't read accounts")?
             .into_iter()
-            .find(|account| account.account_id == id && account_plan_enabled(core, &id))
-            .and_then(|account| account.selected_model.map(|model| (id, model))),
+            .find(|account| account.account_id == id)
+            .and_then(|account| {
+                let bytes = core.credentials.get(&account_slot(&id)).ok().flatten()?;
+                let grant = crate::auth::AuthGrant::from_vault_bytes(&bytes).ok()?;
+                if grant.account_id != id || !grant.plan_usage_enabled() {
+                    return None;
+                }
+                account.selected_model.map(|model| (id, model))
+            }),
         None => None,
     };
     let mut fallbacks = Vec::new();
@@ -339,7 +358,12 @@ fn provider_snapshots(
         else {
             continue;
         };
+        let credential_id = core
+            .credentials
+            .api_key_id(&config, &key)
+            .map_err(|_| "Could not identify provider credentials")?;
         fallbacks.push(ProviderSnapshot {
+            credential_id,
             provider: format!("{:?}", config.provider).to_lowercase(),
             model,
             endpoint: config
@@ -582,7 +606,7 @@ fn dispatch_response(
     let through_id = if !automatic && question.is_none() {
         through_id.or(core
             .store
-            .latest_finalized_system_id(meeting_id)
+            .latest_finalized_id(meeting_id)
             .map_err(|_| "Couldn't read finalized speech")?)
     } else {
         None
@@ -724,6 +748,8 @@ fn dispatch_response(
                 )
                 .await?;
                 targets.push(Target {
+                    account_id: Some(account_id.clone()),
+                    credential_id: None,
                     provider: "chatgpt".into(),
                     model,
                     endpoint: url::Url::parse("https://api.openai.com/v1/responses")
@@ -738,6 +764,8 @@ fn dispatch_response(
                     .into_iter()
                     .filter(|target| target.allow_fallback)
                     .map(|target| Target {
+                        account_id: None,
+                        credential_id: Some(target.credential_id),
                         provider: target.provider,
                         model: target.model,
                         endpoint: target.endpoint,
@@ -861,7 +889,6 @@ fn get_connections(state: tauri::State<'_, Mutex<Core>>) -> Result<ConnectionSta
         .map_err(|_| "Couldn't read accounts")?
         .into_iter()
         .map(|metadata| AccountState {
-            plan_usage_enabled: account_plan_enabled(&core, &metadata.account_id),
             signed_in: core
                 .credentials
                 .get(&account_slot(&metadata.account_id))
@@ -928,10 +955,7 @@ async fn chatgpt_access_token(
         return Err("Account credentials don't match".into());
     }
     if !grant.plan_usage_enabled() {
-        return Err(
-            "ChatGPT plan usage is disabled. Enable it in ChatGPT Settings and sign in again."
-                .into(),
-        );
+        return Err("ChatGPT plan usage is not authorized. Enable it in ChatGPT and reauthorize this account.".into());
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -941,29 +965,18 @@ async fn chatgpt_access_token(
         // earliest_refresh_at is not used: its type and semantics are not established here.
         let refreshed = match grant.refresh(&client).await {
             Ok(grant) => grant,
-            Err(error) if crate::auth::refresh_requires_sign_in(&error) => {
-                let cleared = (|| -> Result<(), String> {
-                    let state = app.state::<Mutex<Core>>();
-                    let core = state.lock().map_err(|_| "Connections are unavailable")?;
-                    if core.login_generation != generation {
-                        return Err("ChatGPT session changed. Try again".into());
+            Err(error) => {
+                if crate::auth::refresh_requires_sign_in(&error) {
+                    if let Ok(core) = app.state::<Mutex<Core>>().lock() {
+                        let _ = core.credentials.delete(&account_slot(account_id));
+                        let _ = core.store.clear_active_if_matching(account_id);
                     }
-                    core.credentials
-                        .delete(&account_slot(account_id))
-                        .map_err(|_| {
-                            "Couldn't clear expired credentials. Sign out and sign in again"
-                        })?;
-                    core.store
-                        .clear_active_if_matching(account_id)
-                        .map_err(|_| "Couldn't clear expired account selection")?;
-                    Ok(())
-                })();
-                let _ = app.emit("connections-changed", ());
-                cleared?;
-                return Err("ChatGPT session expired. Sign in again.".into());
-            }
-            Err(_) => {
-                return Err("ChatGPT refresh is temporarily unavailable. Try again later.".into())
+                    let _ = app.emit("connections-changed", ());
+                    return Err("ChatGPT session expired. Sign in again.".into());
+                }
+                return Err(
+                    "Couldn't renew ChatGPT access. Check your connection and try again.".into(),
+                );
             }
         };
         let saved = (|| -> Result<(), String> {
@@ -990,10 +1003,12 @@ async fn chatgpt_access_token(
             return Err(error);
         }
         if !refreshed.plan_usage_enabled() {
+            if let Ok(core) = app.state::<Mutex<Core>>().lock() {
+                let _ = core.store.clear_active_if_matching(account_id);
+            }
             let _ = app.emit("connections-changed", ());
             return Err(
-                "ChatGPT plan usage is disabled. Enable it in ChatGPT Settings and sign in again."
-                    .into(),
+                "ChatGPT plan usage is no longer authorized. Reauthorize this account.".into(),
             );
         }
         return Ok(zeroize::Zeroizing::new(
@@ -1176,6 +1191,9 @@ fn select_chatgpt_account(
     if grant.account_id != account_id {
         return Err("Account credentials don't match".into());
     }
+    if !grant.plan_usage_enabled() {
+        return Err("ChatGPT plan usage is not authorized. Enable it in ChatGPT and reauthorize this account.".into());
+    }
     core.store
         .select_account(&account_id)
         .map_err(|_| "Couldn't select account".into())
@@ -1203,7 +1221,7 @@ async fn begin_chatgpt_sign_in(app: tauri::AppHandle) -> Result<(), String> {
     if !cfg!(windows) {
         return Err("ChatGPT sign-in requires the Windows credential vault".into());
     }
-    let (host, client, generation, oauth_session_gate, cancel) = {
+    let (host, client, generation, oauth_session_gate, cancel, registration_client) = {
         let state = app.state::<Mutex<Core>>();
         let mut core = state.lock().map_err(|_| "Connections are unavailable")?;
         if core.login_in_progress {
@@ -1223,10 +1241,14 @@ async fn begin_chatgpt_sign_in(app: tauri::AppHandle) -> Result<(), String> {
             core.login_generation,
             core.oauth_session_gate.clone(),
             receiver,
+            core.pending_registration_client_id.clone(),
         )
     };
-    // Adding an account creates its own registration; never borrow another account's client ID.
-    let prepared = AuthAttempt::prepare(&host).await;
+    // Only reuse this unfinished registration, never another saved account's client ID.
+    let prepared = match registration_client {
+        Some(id) => AuthAttempt::prepare_for_client(&host, &id, None, None).await,
+        None => AuthAttempt::prepare(&host).await,
+    };
     let attempt = match prepared {
         Ok(attempt) => attempt,
         Err(error) => {
@@ -1265,8 +1287,24 @@ async fn begin_chatgpt_sign_in(app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn(async move {
         let _worker = worker;
         let result = attempt.finish(&client, &oauth_session_gate, cancel).await;
+        let plan_enabled = result
+            .as_ref()
+            .is_ok_and(|grant| grant.plan_usage_enabled());
         let result = {
             let _gate = oauth_session_gate.lock().await;
+            if let Ok(mut core) = task_app.state::<Mutex<Core>>().lock() {
+                let current_generation = core.login_generation;
+                update_registration_retry(
+                    &mut core.pending_registration_client_id,
+                    current_generation,
+                    generation,
+                    result
+                        .as_ref()
+                        .err()
+                        .and_then(crate::auth::registration_retry_client),
+                    result.is_ok(),
+                );
+            }
             match result {
                 Err(error) => Err(format!("ChatGPT sign-in failed: {error:#}")),
                 Ok(grant) => {
@@ -1302,7 +1340,11 @@ async fn begin_chatgpt_sign_in(app: tauri::AppHandle) -> Result<(), String> {
                             }
                             return Err("Couldn't save account metadata".into());
                         }
-                        let _ = core.store.select_account(&grant.account_id);
+                        if grant.plan_usage_enabled() {
+                            let _ = core.store.select_account(&grant.account_id);
+                        } else {
+                            let _ = core.store.clear_active_if_matching(&grant.account_id);
+                        }
                         Ok(())
                     })();
                     if result.is_err() {
@@ -1316,7 +1358,11 @@ async fn begin_chatgpt_sign_in(app: tauri::AppHandle) -> Result<(), String> {
             &task_app,
             generation,
             result,
-            "ChatGPT connected. Pick a model to start.",
+            if plan_enabled {
+                "ChatGPT connected. Pick a model to start."
+            } else {
+                "Signed in. ChatGPT plan usage is not authorized. Enable it and reauthorize this account."
+            },
         );
     });
     Ok(())
@@ -1436,6 +1482,7 @@ async fn reauthorize_chatgpt_account(
     tauri::async_runtime::spawn(async move {
         let _worker = worker;
         let grant = attempt.finish(&client, &gate, cancel).await;
+        let plan_enabled = grant.as_ref().is_ok_and(|grant| grant.plan_usage_enabled());
         let result = {
             let _gate = gate.lock().await;
             match grant {
@@ -1473,6 +1520,9 @@ async fn reauthorize_chatgpt_account(
                             }
                             return Err("Couldn't save account metadata".into());
                         }
+                        if !grant.plan_usage_enabled() {
+                            let _ = core.store.clear_active_if_matching(&account_id);
+                        }
                         Ok(())
                     })();
                     if result.is_err() {
@@ -1486,7 +1536,11 @@ async fn reauthorize_chatgpt_account(
             &task_app,
             generation,
             result,
-            "ChatGPT account reauthorized.",
+            if plan_enabled {
+                "ChatGPT account reauthorized."
+            } else {
+                "Signed in. ChatGPT plan usage is not authorized. Enable it and reauthorize this account."
+            },
         );
     });
     Ok(())
@@ -1753,6 +1807,106 @@ fn index_local_document(
     let result = store.upsert_document(&input, now);
     cleanup_document_copies_locked(store, root)?;
     result
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiBudgetProvider {
+    provider: String,
+    model: Option<String>,
+    key_id: Option<String>,
+    budget: Option<crate::store::ApiBudgetStatus>,
+}
+
+#[tauri::command]
+async fn api_budgets(app: tauri::AppHandle) -> Result<Vec<ApiBudgetProvider>, String> {
+    let (_, work) = local_work(&app)?;
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Vec<ApiBudgetProvider>> {
+        let _work = work;
+        let state = app.state::<Mutex<Core>>();
+        let core = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Application state unavailable"))?;
+        core.store
+            .providers()?
+            .into_iter()
+            .map(|config| {
+                let provider = format!("{:?}", config.provider).to_lowercase();
+                let key_id = core
+                    .credentials
+                    .api_key(&config)?
+                    .map(|key| core.credentials.api_key_id(&config, &key))
+                    .transpose()?;
+                let budget = key_id
+                    .as_deref()
+                    .map(|key| {
+                        core.store
+                            .api_budget(&provider, key, config.model.as_deref())
+                    })
+                    .transpose()?;
+                Ok(ApiBudgetProvider {
+                    provider,
+                    model: config.model,
+                    key_id,
+                    budget,
+                })
+            })
+            .collect()
+    })
+    .await
+    .map_err(|_| "API budget lookup stopped unexpectedly".to_string())?
+    .map_err(|_| "Could not read local API budgets. Try again.".to_string())
+}
+
+#[tauri::command]
+async fn save_api_budget(
+    app: tauri::AppHandle,
+    input: crate::store::ApiBudgetInput,
+) -> Result<(), String> {
+    let (_, work) = local_work(&app)?;
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        let _work = work;
+        let state = app.state::<Mutex<Core>>();
+        let core = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Application state unavailable"))?;
+        let config = core
+            .store
+            .providers()?
+            .into_iter()
+            .find(|c| format!("{:?}", c.provider).to_lowercase() == input.provider)
+            .ok_or_else(|| anyhow::anyhow!("Provider unavailable"))?;
+        let key = core
+            .credentials
+            .api_key(&config)?
+            .ok_or_else(|| anyhow::anyhow!("API key unavailable"))?;
+        if core.credentials.api_key_id(&config, &key)? != input.key_id
+            || config.model != input.model
+        {
+            anyhow::bail!("Provider selection changed");
+        }
+        core.store.save_api_budget(&input)
+    })
+    .await
+    .map_err(|_| "API budget save stopped unexpectedly".to_string())?
+    .map_err(|_| {
+        "Could not save API budgets. Check Connections and refresh before retrying.".to_string()
+    })
+}
+
+#[tauri::command]
+async fn usage_report(
+    app: tauri::AppHandle,
+    before_id: Option<i64>,
+) -> Result<crate::store::UsageReport, String> {
+    let (path, work) = local_work(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _work = work;
+        Store::open(path)?.usage_report(before_id)
+    })
+    .await
+    .map_err(|_| "Usage lookup stopped unexpectedly".to_string())?
+    .map_err(|_| "Could not read local usage. Try again.".to_string())
 }
 
 #[tauri::command]
@@ -2598,10 +2752,14 @@ pub fn run() {
                                     core.meeting.lock().ok()?.state().ok()?.meeting_id
                                 });
                                 if let Some(id) = id {
-                                    if let Err(error) =
-                                        dispatch_response(app, id, None, false, false, None)
-                                    {
-                                        let _ = app.emit("app-notice", error);
+                                    match dispatch_response(app, id, None, false, false, None) {
+                                        Ok(Some(_)) => {}
+                                        Ok(None) => {
+                                            let _ = app.emit("app-notice", "No new speech to send.");
+                                        }
+                                        Err(error) => {
+                                            let _ = app.emit("app-notice", error);
+                                        }
                                     }
                                 } else {
                                     let _ = app.emit(
@@ -2637,6 +2795,9 @@ pub fn run() {
             audio_devices,
             open_documents,
             request_context,
+            usage_report,
+            api_budgets,
+            save_api_budget,
             close_documents,
             list_documents,
             import_document,
@@ -2672,6 +2833,8 @@ pub fn run() {
                     .as_millis(),
             )?;
             store.recover_interrupted_requests()?;
+            store.recover_usage()?;
+            store.recover_api_budgets()?;
             let recovered = store.recover_stale_meetings(now)?;
             if recovered > 0 {
                 log::info!("component=meeting action=recovered_interrupted count={recovered}");
@@ -2692,6 +2855,7 @@ pub fn run() {
                 login_cancel: None,
                 login_in_progress: false,
                 login_generation: 0,
+                pending_registration_client_id: None,
                 oauth_session_gate: Arc::new(tokio::sync::Mutex::new(())),
                 pending_workers: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 pending_done: Arc::new(tokio::sync::Notify::new()),
@@ -3173,6 +3337,21 @@ mod tests {
         assert!(page(50).next.is_none());
         assert_eq!(page(51).segments.len(), 50);
         assert_eq!(page(51).next.unwrap().row_id, 50);
+    }
+
+    #[test]
+    fn unfinished_registration_retry_is_generation_bound() {
+        let mut pending = None;
+        update_registration_retry(&mut pending, 2, 2, Some("oaiapp_issued"), false);
+        assert_eq!(pending.as_deref(), Some("oaiapp_issued"));
+        update_registration_retry(&mut pending, 3, 2, Some("oaiapp_stale"), false);
+        assert_eq!(pending.as_deref(), Some("oaiapp_issued"));
+        update_registration_retry(&mut pending, 3, 2, None, true);
+        assert!(pending.is_some());
+        update_registration_retry(&mut pending, 3, 3, None, false);
+        assert!(pending.is_some());
+        update_registration_retry(&mut pending, 3, 3, None, true);
+        assert!(pending.is_none());
     }
 
     #[test]

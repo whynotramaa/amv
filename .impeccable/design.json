@@ -285,7 +285,25 @@
         "value": "520px",
         "purpose": "Maximum preview assistant width."
       }
-    ]
+    ],
+    "preparedContext": {
+      "component": "src/components/ContextInspector.tsx",
+      "lazy": true,
+      "boundedAttemptPaging": true,
+      "preparedNotReceipt": true,
+      "usesExistingTokens": true,
+      "evidence": "Synthetic IPC collaborative-browser fixture; Windows/provider acceptance pending"
+    },
+    "localUsage": {
+      "component": "src/components/UsageView.tsx",
+      "lazy": true,
+      "attemptPageLimit": 20,
+      "groupLimit": 100,
+      "explicitRefresh": true,
+      "unknownCountsPreserved": true,
+      "usesExistingTokens": true,
+      "evidence": "Collaborative-browser synthetic IPC; Windows/provider acceptance pending"
+    }
   },
   "components": [
     {
@@ -421,5 +439,8 @@
     ],
     "sessionControls": "Session fixture proves explicit discovery/selection, cancellation, failed sign-in recovery, local sign-out feedback and draft preservation at 420px/520px. It is synthetic UI evidence; live OAuth, DPAPI and native Windows acceptance remain unverified.",
     "streamingResponses": "Native question/speech/retry/cancel controls; fresh automatic consent; per-attempt stale protection; GFM and bounded lazy Shiki JS highlighting from existing tokens; safe native web links; no remote images. Response fixtures are synthetic, not Windows runtime proof."
+  },
+  "guidelines": {
+    "apiBudgets": "Lazy per-provider disclosures reuse existing tokens; exact USD input; unknown costs and local cap blocks explicit; failed saves retain drafts and refresh confirms discard. No shadows or polling. Anonymous completed counters expire after8localdays; live pending preserved. Synthetic browser proof only."
   }
 }

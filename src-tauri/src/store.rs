@@ -3,7 +3,15 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::Duration};
 
-const SCHEMA_VERSION: i64 = 9;
+#[path = "usage.rs"]
+mod usage;
+pub use usage::*;
+
+#[path = "budgets.rs"]
+mod budgets;
+pub use budgets::*;
+
+const SCHEMA_VERSION: i64 = 11;
 const MAX_CONTEXT_REQUEST: usize = 2 * 1024 * 1024;
 const MAX_CONTEXT_METADATA: usize = 1024 * 1024;
 const MAX_DOCUMENT_TEXT: usize = 256 * 1024;
@@ -248,6 +256,8 @@ pub struct RequestUsage {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextSnapshot {
+    pub credential_id: Option<String>,
+    pub account_id: Option<String>,
     pub id: i64,
     pub request_id: i64,
     pub provider: String,
@@ -480,6 +490,14 @@ impl Store {
             if version < 9 {
                 tx.execute_batch(include_str!("../migrations/009_request_context.sql"))
                     .context("apply request context migration")?;
+            }
+            if version < 10 {
+                tx.execute_batch(include_str!("../migrations/010_usage.sql"))
+                    .context("apply usage migration")?;
+            }
+            if version < 11 {
+                tx.execute_batch(include_str!("../migrations/011_api_budgets.sql"))
+                    .context("apply API budget migration")?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .context("set schema version")?;
@@ -932,9 +950,9 @@ impl Store {
         Ok(TranscriptPage { segments, next })
     }
 
-    pub fn latest_finalized_system_id(&self, meeting_id: i64) -> Result<Option<i64>> {
+    pub fn latest_finalized_id(&self, meeting_id: i64) -> Result<Option<i64>> {
         validate_id(meeting_id, "meeting")?;
-        Ok(self.conn.query_row("SELECT MAX(id) FROM transcript_segments WHERE meeting_id = ?1 AND source = 'system' AND is_final = 1", [meeting_id], |row| row.get(0))?)
+        Ok(self.conn.query_row("SELECT MAX(id) FROM transcript_segments WHERE meeting_id = ?1 AND is_final = 1", [meeting_id], |row| row.get(0))?)
     }
 
     pub fn prepare_transcript_request(
@@ -991,7 +1009,7 @@ impl Store {
         };
         let mut statement = tx.prepare(
             "SELECT id, revision, text FROM transcript_segments
-             WHERE meeting_id = ?1 AND source = 'system' AND is_final = 1
+             WHERE meeting_id = ?1 AND is_final = 1
                AND (?2 IS NULL OR id > ?2 OR (id = ?2 AND ?5 > 0))
                AND (?3 IS NULL OR id <= ?3)
              ORDER BY id LIMIT ?4",
@@ -1155,23 +1173,60 @@ impl Store {
         &self,
         request_id: i64,
         provider: &str,
+        account_id: Option<&str>,
         model: &str,
         request_json: &str,
         metadata_json: &str,
         upstream_omitted: bool,
     ) -> Result<ContextSnapshot> {
+        self.save_attributed_request_context(
+            request_id,
+            provider,
+            account_id,
+            None,
+            model,
+            request_json,
+            metadata_json,
+            upstream_omitted,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_attributed_request_context(
+        &self,
+        request_id: i64,
+        provider: &str,
+        account_id: Option<&str>,
+        credential_id: Option<&str>,
+        model: &str,
+        request_json: &str,
+        metadata_json: &str,
+        upstream_omitted: bool,
+    ) -> Result<ContextSnapshot> {
+        if let Some(id) = credential_id {
+            validate_account_id(id)?;
+            if provider == "chatgpt" {
+                bail!("API key attribution is only supported for API providers");
+            }
+        }
         validate_id(request_id, "request")?;
         if !matches!(provider, "chatgpt" | "gemini" | "deepseek") {
             bail!("unsupported context provider");
         }
         validate_request_id_text(model, "model")?;
+        if let Some(id) = account_id {
+            validate_account_id(id)?;
+            if provider != "chatgpt" {
+                bail!("account attribution is only supported for ChatGPT");
+            }
+        }
         let request = bounded_context_json(request_json, MAX_CONTEXT_REQUEST)?;
         let metadata = bounded_context_json(metadata_json, MAX_CONTEXT_METADATA)?;
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let inserted = tx.execute(
-            "INSERT INTO request_context (request_id, provider, model, request_json, metadata_json, upstream_omitted)
-             SELECT id, ?2, ?3, ?4, ?5, ?6 FROM message_requests WHERE id = ?1 AND status = 'inflight'",
-            params![request_id, provider, model, request_json, metadata_json, upstream_omitted],
+            "INSERT INTO request_context (request_id, provider, model, request_json, metadata_json, upstream_omitted, account_id, credential_id)
+             SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM message_requests WHERE id = ?1 AND status = 'inflight'",
+            params![request_id, provider, model, request_json, metadata_json, upstream_omitted, account_id, credential_id],
         )?;
         if inserted != 1 {
             bail!("request is not in flight");
@@ -1184,6 +1239,8 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(ContextSnapshot {
+            credential_id: credential_id.map(str::to_owned),
+            account_id: account_id.map(str::to_owned),
             id,
             request_id,
             provider: provider.into(),
@@ -1206,7 +1263,7 @@ impl Store {
             validate_id(id, "context cursor")?;
         }
         let mut statement = self.conn.prepare(
-            "SELECT id, request_id, provider, model, created_at, request_json, metadata_json, upstream_omitted
+            "SELECT id, request_id, provider, model, created_at, request_json, metadata_json, upstream_omitted, account_id, credential_id
              FROM request_context WHERE request_id = ?1 AND (?2 IS NULL OR id < ?2)
              ORDER BY id DESC LIMIT 1",
         )?;
@@ -1221,6 +1278,8 @@ impl Store {
                 (3, MAX_REQUEST_ID_TEXT),
                 (5, MAX_CONTEXT_REQUEST),
                 (6, MAX_CONTEXT_METADATA),
+                (8, 43),
+                (9, 43),
             ],
         )?;
         let provider: String = row.get(2)?;
@@ -1229,7 +1288,20 @@ impl Store {
         }
         let model: String = row.get(3)?;
         validate_request_id_text(&model, "model")?;
+        let account_id: Option<String> = row.get(8)?;
+        if let Some(id) = &account_id {
+            validate_account_id(id)?;
+        }
+        let credential_id: Option<String> = row.get(9)?;
+        if let Some(id) = &credential_id {
+            validate_account_id(id)?;
+            if provider == "chatgpt" {
+                bail!("invalid API key attribution");
+            }
+        }
         Ok(Some(ContextSnapshot {
+            credential_id,
+            account_id,
             id: row.get(0)?,
             request_id: row.get(1)?,
             provider,
@@ -2320,32 +2392,35 @@ mod tests {
             let mut store = Store::open(&path)?;
             let meeting = store.create_meeting("context", 0, &Settings::default())?;
             let pending = store.prepare_question_request(meeting.id, "new question")?;
-            store
-                .conn
-                .execute_batch("DROP TABLE request_context; PRAGMA user_version=8;")?;
+            store.conn.execute_batch(
+                "DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; PRAGMA user_version=8;",
+            )?;
             drop(store);
             let mut store = Store::open(&path)?;
             assert!(store
-                .save_request_context(pending.id, "chatgpt", "model", "{}", "{}", false)
+                .save_request_context(pending.id, "chatgpt", None, "model", "{}", "{}", false)
                 .is_err());
             store.begin_request(pending.id)?;
             let request = r#"{"developer":"quoted evidence","user":"new question"}"#;
             let metadata = r#"{"sources":["memory 1"],"omittedHistory":2}"#;
-            let first = store
-                .save_request_context(pending.id, "chatgpt", "first", request, metadata, true)?;
-            let fallback = store
-                .save_request_context(pending.id, "gemini", "fallback", request, "{}", false)?;
+            let first = store.save_request_context(
+                pending.id, "chatgpt", None, "first", request, metadata, true,
+            )?;
+            let fallback = store.save_request_context(
+                pending.id, "gemini", None, "fallback", request, "{}", false,
+            )?;
             assert!(fallback.id > first.id);
             store.fail_request(pending.id, "retryable", None)?;
             assert!(store
-                .save_request_context(pending.id, "deepseek", "model", "{}", "{}", false)
+                .save_request_context(pending.id, "deepseek", None, "model", "{}", "{}", false)
                 .is_err());
             store.begin_request(pending.id)?;
-            let retry = store
-                .save_request_context(pending.id, "deepseek", "retry", request, "{}", false)?;
+            let retry = store.save_request_context(
+                pending.id, "deepseek", None, "retry", request, "{}", false,
+            )?;
             store.complete_request(pending.id, "answer", "deepseek", "retry", None)?;
             assert!(store
-                .save_request_context(pending.id, "deepseek", "model", "{}", "{}", false)
+                .save_request_context(pending.id, "deepseek", None, "model", "{}", "{}", false)
                 .is_err());
             drop(store);
             let store = Store::open(&path)?;
@@ -2412,15 +2487,15 @@ mod tests {
             ),
         ] {
             assert!(store
-                .save_request_context(pending.id, provider, model, &request, &metadata, false)
+                .save_request_context(pending.id, provider, None, model, &request, &metadata, false)
                 .is_err());
         }
         assert!(store
-            .save_request_context(0, "chatgpt", "model", "{}", "{}", false)
+            .save_request_context(0, "chatgpt", None, "model", "{}", "{}", false)
             .is_err());
         assert!(store.request_context(pending.id, None)?.is_none());
         let snapshot =
-            store.save_request_context(pending.id, "chatgpt", "model", "{}", "{}", false)?;
+            store.save_request_context(pending.id, "chatgpt", None, "model", "{}", "{}", false)?;
         // Tampered SQLite values are checked while borrowed, before JSON/string allocation.
         store.conn.execute(
             "UPDATE request_context SET request_json=?1 WHERE id=?2",
@@ -2441,7 +2516,7 @@ mod tests {
         let result = (|| -> Result<()> {
             let old = Store::open(&path)?;
             let settings = old.settings()?;
-            old.conn.execute_batch("DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; PRAGMA user_version=7;")?;
+            old.conn.execute_batch("DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; PRAGMA user_version=7;")?;
             drop(old);
             let store = Store::open(&path)?;
             assert_eq!(store.settings()?, settings);
@@ -2585,7 +2660,7 @@ mod tests {
         let result = (|| -> Result<()> {
             // Exercise the actual previous-schema upgrade without changing other data.
             let old = Store::open(&path)?;
-            old.conn.execute_batch("DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; PRAGMA user_version=6;")?;
+            old.conn.execute_batch("DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; PRAGMA user_version=6;")?;
             let settings = old.settings()?;
             drop(old);
             let store = Store::open(&path)?;
@@ -2808,7 +2883,7 @@ mod tests {
         );
         let (_rows, omitted) = store.recent_transcript(meeting.id, 0, true)?;
         assert!(omitted);
-        let through = store.latest_finalized_system_id(meeting.id)?.unwrap();
+        let through = store.latest_finalized_id(meeting.id)?.unwrap();
         let late = store.insert_finalized_transcript(
             meeting.id,
             201,

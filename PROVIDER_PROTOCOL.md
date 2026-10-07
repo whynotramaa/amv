@@ -7,7 +7,7 @@ guessing.
 
 ## Current source gap
 
-Newer source uses a fixed public OAuth client ID rather than the dynamic flow described below. It is preserved pending integration verification. That source change does not fulfill the user's dynamic-registration decision or establish third-party eligibility. The following research remains the intended contract, not a claim of current implementation.
+Source now implements the official dynamic flow below and uses the public Responses and models endpoints. Identity-only grants remain stored, while model discovery and inference require direct plan permission before and after refresh. Temporary refresh failures retain credentials; known terminal failures clear unusable credentials. This is source/test evidence, not live eligible-account acceptance.
 
 ## Decision that gates the ChatGPT path
 

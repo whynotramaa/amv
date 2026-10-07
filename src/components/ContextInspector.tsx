@@ -8,7 +8,7 @@ function validSnapshot(value: ContextSnapshot, requestId: number) {
   const { request, metadata } = value;
   const number = (input: unknown) => Number.isSafeInteger(input) && (input as number) >= 0;
   const text = (input: unknown) => typeof input === 'string';
-  return number(value.id) && value.id > 0 && value.requestId === requestId && text(value.provider) && text(value.model) && number(value.createdAt) && typeof value.upstreamOmitted === 'boolean'
+  return number(value.id) && value.id > 0 && value.requestId === requestId && text(value.provider) && text(value.model) && (value.accountId == null || (text(value.accountId) && value.accountId.length === 43)) && (value.credentialId == null || (text(value.credentialId) && /^[A-Za-z0-9_-]{43}$/.test(value.credentialId))) && number(value.createdAt) && typeof value.upstreamOmitted === 'boolean'
     && request && text(request.model) && (request.instructions === null || text(request.instructions))
     && Array.isArray(request.messages) && request.messages.length <= 4096 && request.messages.every(message => message && text(message.role) && text(message.content))
     && metadata && text(metadata.model) && number(metadata.estimatedInputTokens) && number(metadata.inputTokenBudget) && number(metadata.responseReserveTokens)
@@ -53,6 +53,7 @@ export default function ContextInspector({ requestId }: { requestId: number }) {
     {!busy && !error && !snapshot && <p className="help">No prepared context is saved for this request. It may predate this feature or have stopped before preparation.</p>}
     {snapshot && <>
       <div className="context-heading"><span>{snapshot.provider} · {snapshot.model}</span><span className="help">{new Date(snapshot.createdAt * 1000).toLocaleString()}</span></div>
+      <p className="help">{snapshot.accountId ? `ChatGPT account ${snapshot.accountId.slice(0, 8)}` : snapshot.provider === 'chatgpt' ? 'Account attribution was not recorded for this older attempt.' : snapshot.credentialId ? `API key ${snapshot.credentialId.slice(0,12)}…${snapshot.credentialId.slice(-4)}` : 'API key attribution was not recorded for this older attempt.'}</p>
       <dl className="context-budget"><dt>Estimated input</dt><dd>{snapshot.metadata.estimatedInputTokens} tokens</dd><dt>Input budget</dt><dd>{snapshot.metadata.inputTokenBudget} tokens</dd><dt>Response reserve</dt><dd>{snapshot.metadata.responseReserveTokens} tokens</dd></dl>
       <p className="help">Token counts are conservative byte estimates. Budgets are application limits, not verified model limits.</p>
       {snapshot.upstreamOmitted && <p className="help">Some history or recent transcript was excluded before compilation.</p>}

@@ -5,6 +5,7 @@ import { Button, Icon, IconButton } from './components/primitives';
 import Connections from './components/Connections';
 import MeetingHistory from './components/MeetingHistory';
 const ResponseView = lazy(() => import('./components/ResponseView'));
+const UsageView = lazy(() => import('./components/UsageView'));
 import './styles/app.css';
 
 const idleMeeting: MeetingState = { status: 'idle', meetingId: null, title: '', startedAt: null, transcript: [], error: null };
@@ -16,7 +17,7 @@ function savedOpacity() {
 
 export default function App() {
   const [state, setState] = useState<AppState>({ settings: defaults, audioAvailable: false, chatgptConnected: false, inferenceAvailable: false, shortcutError: null });
-  const [view, setView] = useState<'assistant' | 'settings' | 'connections' | 'history'>('assistant');
+  const [view, setView] = useState<'assistant' | 'settings' | 'connections' | 'history' | 'usage'>('assistant');
   const [draft, setDraft] = useState(defaults);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -191,7 +192,7 @@ export default function App() {
       </header>
 
       <div className="view">
-        {view === 'history' ? <MeetingHistory onOpenAssistant={openSavedMeeting} /> : view === 'connections' ? <Connections onChanged={() => void loadState().then(setState).catch(() => {})} /> : view === 'assistant' ? <>
+        {view === 'usage' ? <Suspense fallback={<p className="help" role="status">Loading local usage…</p>}><UsageView /></Suspense> : view === 'history' ? <MeetingHistory onOpenAssistant={openSavedMeeting} /> : view === 'connections' ? <Connections onChanged={() => void loadState().then(setState).catch(() => {})} /> : view === 'assistant' ? <>
           {meetingSetup && <form className="settings-form" onSubmit={beginMeeting} aria-label="Prepare a meeting">
             <div className="field"><label htmlFor="meeting-title">Meeting title</label><input id="meeting-title" className="input" value={meetingTitle} maxLength={200} onChange={event => setMeetingTitle(event.target.value)} disabled={meetingBusy} required /></div>
             <label className="checkbox"><input type="checkbox" checked={captureConsent} onChange={event => setCaptureConsent(event.target.checked)} disabled={meetingBusy} />I have permission to capture audio for this meeting.</label>
@@ -222,6 +223,7 @@ export default function App() {
         </> : <form className="settings-form" onSubmit={submit}>
           <div className="settings-links">
             <Button quiet onClick={() => { setView('connections'); setNotice(null); }}>{state.inferenceAvailable ? 'ChatGPT connected' : state.chatgptConnected ? 'Pick a model' : 'Connect ChatGPT'}</Button>
+            <Button quiet onClick={() => { setView('usage'); setNotice(null); }}>Usage</Button>
             <Button quiet onClick={() => { setView('history'); setNotice(null); }}>Saved meetings</Button>
             <Button quiet onClick={() => void openDocuments().catch(error => setNotice({ text: String(error), error: true }))}>Documents</Button>
             <Button quiet onClick={() => void openMemory().catch(error => setNotice({ text: String(error), error: true }))}>Memory</Button>

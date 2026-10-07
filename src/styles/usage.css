@@ -1,0 +1,16 @@
+.usage { display: grid; gap: var(--space-4); min-width: 0; }
+.usage-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.usage h3 { margin: 0; font-size: var(--font-size-md); font-weight: var(--font-weight-medium); }
+.usage-group, .usage-attempts { display: grid; gap: var(--space-2); min-width: 0; border-top: 1px solid var(--border-subtle); padding-top: var(--space-4); }
+.usage summary { min-height: var(--control-height); padding-block: var(--space-2); cursor: pointer; font-size: var(--font-size-sm); }
+.usage summary::marker { color: var(--text-secondary); }
+.usage summary > :last-child:not(:first-child) { display: block; margin-top: var(--space-1); }
+.usage-period, .usage-attempt { border-bottom: 1px solid var(--border-subtle); }
+.usage details[open] { padding-bottom: var(--space-3); }
+.usage-values { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-2); margin: var(--space-3) 0; font-size: var(--font-size-sm); }
+.usage-values dt { color: var(--text-secondary); }
+.usage-values dd { margin: 0; text-align: right; font-family: var(--font-code); font-variant-numeric: tabular-nums; }
+.usage-measurement { font-family: var(--font-code); font-variant-numeric: tabular-nums; }
+.usage p, .usage summary, .usage-values dd { overflow-wrap: anywhere; }
+.usage-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.usage-actions > p { width: 100%; }

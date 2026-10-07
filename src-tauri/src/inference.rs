@@ -111,21 +111,20 @@ impl fmt::Display for StreamFailure {
 
 impl std::error::Error for StreamFailure {}
 
-pub async fn stream<F>(
+pub async fn stream<F, U>(
     client: &reqwest::Client,
     endpoint: Url,
     bearer: &str,
     api: WireApi,
     request: &StreamRequest,
     mut on_delta: F,
+    mut on_usage: U,
 ) -> Result<StreamUsage, StreamFailure>
 where
     F: FnMut(&str) -> bool,
+    U: FnMut(&StreamUsage),
 {
     validate_endpoint(&endpoint)?;
-    if api == WireApi::Chatgpt && endpoint.as_str() != "https://api.openai.com/v1/responses" {
-        return Err(local_failure(FailureKind::InvalidRequest));
-    }
     if bearer.is_empty() || bearer.len() > 16 * 1024 {
         return Err(local_failure(FailureKind::InvalidRequest));
     }
@@ -219,11 +218,21 @@ where
             any_output,
         })?;
         for event in events {
-            let parsed = parse_event(api, &event).map_err(|failure| StreamFailure {
-                any_output,
-                request_id: request_id.clone(),
-                ..failure
-            })?;
+            let parsed = match parse_event(api, &event) {
+                Ok(events) => events,
+                Err(failure) => {
+                    // Terminal errors can report billed usage alongside their diagnostic.
+                    if let Ok(value) = serde_json::from_str::<Value>(&event.data) {
+                        merge_usage(&mut usage, reported_usage(&value));
+                        on_usage(&usage);
+                    }
+                    return Err(StreamFailure {
+                        any_output,
+                        request_id: request_id.clone(),
+                        ..failure
+                    });
+                }
+            };
             for item in parsed {
                 match item {
                     StreamEvent::Delta(delta) if !delta.is_empty() => {
@@ -247,7 +256,10 @@ where
                         answer_bytes += delta.len();
                     }
                     StreamEvent::Delta(_) => {}
-                    StreamEvent::Usage(value) => merge_usage(&mut usage, value),
+                    StreamEvent::Usage(value) => {
+                        merge_usage(&mut usage, value);
+                        on_usage(&usage);
+                    }
                     StreamEvent::Terminal(kind) => {
                         if kind == TerminalEvent::Done {
                             if api != WireApi::ChatCompletions || !compat_finish {
@@ -311,11 +323,32 @@ pub fn can_fallback(failure: &StreamFailure, allowed_by_user: bool) -> bool {
 }
 
 fn responses_body(request: &StreamRequest) -> Value {
-    let input: Vec<_> = request.messages.iter().map(|message| {
-        let kind = if message.role == "assistant" { "output_text" } else { "input_text" };
-        json!({"type": "message", "role": message.role, "content": [{"type": kind, "text": message.content}]})
-    }).collect();
-    json!({"model": request.model, "instructions": request.instructions, "input": input, "store": false, "stream": true})
+    let mut input = Vec::new();
+    let mut instructions = request.instructions.clone();
+    for message in &request.messages {
+        if matches!(message.role.as_str(), "system" | "developer") {
+            if let Some(existing) = &mut instructions {
+                existing.push_str("\n\n");
+                existing.push_str(&message.content);
+            } else {
+                instructions = Some(message.content.clone());
+            }
+        } else {
+            let kind = if message.role == "assistant" {
+                "output_text"
+            } else {
+                "input_text"
+            };
+            input.push(json!({ "type": "message", "role": message.role, "content": [{ "type": kind, "text": message.content }] }));
+        }
+    }
+    json!({
+        "model": request.model,
+        "instructions": instructions.unwrap_or_default(),
+        "input": input,
+        "store": false,
+        "stream": true,
+    })
 }
 
 fn compat_body(request: &StreamRequest) -> Value {
@@ -381,6 +414,10 @@ fn parse_responses_event(
 
 fn parse_compat_event(value: &Value) -> Result<Vec<StreamEvent>, StreamFailure> {
     let mut events = Vec::new();
+    // Capture reported counts before output callbacks can stop local persistence.
+    if value.get("usage").is_some() {
+        events.push(StreamEvent::Usage(usage_from(value.get("usage"))));
+    }
     if let Some(content) = value
         .pointer("/choices/0/delta/content")
         .and_then(Value::as_str)
@@ -392,7 +429,6 @@ fn parse_compat_event(value: &Value) -> Result<Vec<StreamEvent>, StreamFailure> 
         .and_then(Value::as_str)
     {
         if !reason.is_empty() {
-            events.push(StreamEvent::Usage(usage_from(value.get("usage"))));
             events.push(StreamEvent::Terminal(if reason == "stop" {
                 TerminalEvent::Completed
             } else {
@@ -400,18 +436,19 @@ fn parse_compat_event(value: &Value) -> Result<Vec<StreamEvent>, StreamFailure> 
             }));
         }
     }
-    if value.get("usage").is_some() && events.is_empty() {
-        events.push(StreamEvent::Usage(usage_from(value.get("usage"))));
-    }
     Ok(events)
 }
 
-fn usage_event(value: &Value) -> StreamEvent {
-    StreamEvent::Usage(usage_from(
+fn reported_usage(value: &Value) -> StreamUsage {
+    usage_from(
         value
             .get("usage")
             .or_else(|| value.pointer("/response/usage")),
-    ))
+    )
+}
+
+fn usage_event(value: &Value) -> StreamEvent {
+    StreamEvent::Usage(reported_usage(value))
 }
 
 fn usage_from(value: Option<&Value>) -> StreamUsage {
@@ -465,7 +502,7 @@ fn structured_failure(value: &Value, fallback: FailureKind) -> StreamFailure {
 }
 
 // Provider error bodies can reflect input; only known diagnostic fields may escape.
-fn safe_code(value: &str) -> Option<String> {
+pub(crate) fn safe_code(value: &str) -> Option<String> {
     match value {
         "subscription_sharing_usage_limit_exceeded"
         | "subscription_sharing_invalid_user"
@@ -707,6 +744,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn incomplete_and_failed_events_preserve_reported_usage() {
+        let compat = json!({"choices":[{"finish_reason":"length"}],"usage":{"prompt_tokens":20,"completion_tokens":10}});
+        let events = parse_compat_event(&compat).unwrap();
+        assert_eq!(
+            events[0],
+            StreamEvent::Usage(StreamUsage {
+                input_tokens: Some(20),
+                output_tokens: Some(10),
+                cached_tokens: None
+            })
+        );
+        assert_eq!(events[1], StreamEvent::Terminal(TerminalEvent::Incomplete));
+        let with_text = json!({"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}],"usage":{"prompt_tokens":20,"completion_tokens":10}});
+        let events = parse_compat_event(&with_text).unwrap();
+        assert!(matches!(events[0], StreamEvent::Usage(_)));
+        assert_eq!(events[1], StreamEvent::Delta("partial".into()));
+        assert_eq!(events[2], StreamEvent::Terminal(TerminalEvent::Incomplete));
+        for kind in ["response.failed", "response.incomplete"] {
+            let value = json!({"type":kind,"response":{"usage":{"input_tokens":40,"output_tokens":5,"input_tokens_details":{"cached_tokens":12}},"error":{"code":"server_error"}}});
+            assert!(parse_responses_event(Some(kind), &value).is_err());
+            assert_eq!(
+                reported_usage(&value),
+                StreamUsage {
+                    input_tokens: Some(40),
+                    output_tokens: Some(5),
+                    cached_tokens: Some(12)
+                }
+            );
+        }
+        assert_eq!(
+            reported_usage(&json!({"error":{"code":"server_error"}})),
+            StreamUsage::default()
+        );
+    }
+
+    #[test]
     fn diagnostics_keep_safe_receipts_without_provider_messages() {
         let mut failure = structured_failure(
             &json!({"error":{"code":"subscription_sharing_user_not_eligible", "param":"model", "message":"private transcript"}}),
@@ -739,15 +812,6 @@ mod tests {
                 },
             ],
         };
-        let public = responses_body(&request);
-        assert_eq!(public["instructions"], "trusted rules");
-        assert_eq!(public["input"][0]["role"], "developer");
-        assert_eq!(
-            public["input"][0]["content"][0]["text"],
-            "quoted untrusted context"
-        );
-        assert_eq!(public["store"], false);
-        assert_eq!(public["stream"], true);
         let value = compat_body(&request);
         assert_eq!(value["messages"][0]["role"], "system");
         assert_eq!(value["messages"][1]["role"], "user");

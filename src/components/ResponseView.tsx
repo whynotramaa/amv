@@ -1,10 +1,12 @@
-import { isValidElement, useEffect, useRef, useState, type ReactNode } from 'react';
+import { isValidElement, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { createHighlighterCore, type ThemedToken } from 'shiki/core';
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
 import { openExternal, type ResponseState } from '../bridge';
 import { Button } from './primitives';
+
+const ContextInspector = lazy(() => import('./ContextInspector'));
 
 const grammars = {
   javascript: () => import('@shikijs/langs/javascript'),
@@ -81,6 +83,8 @@ function CodeBlock({ children }: { children?: ReactNode }) {
 }
 
 export default function ResponseView({ response, onRetry }: { response: ResponseState; onRetry?: () => void }) {
+  const [contextRequest, setContextRequest] = useState<number | null>(null);
+  const contextOpen = contextRequest === response.requestId;
   const [linkError, setLinkError] = useState<string | null>(null);
   const busy = response.status === 'preparing' || response.status === 'streaming';
   const failed = response.status === 'error' || response.status === 'cancelled';
@@ -101,6 +105,10 @@ export default function ResponseView({ response, onRetry }: { response: Response
     }}>{response.answer}</ReactMarkdown></div> : <p className="help">{busy ? 'The answer will appear here.' : response.error || 'No answer was returned.'}</p>}
     {response.answer && response.error && <p className="notice error" role="alert">{response.error}</p>}
     {linkError && <p className="notice error" role="alert">{linkError}</p>}
+    {response.contextOmitted && <p className="response-note">Some earlier meeting context was omitted.</p>}
+    {response.usage && <p className="response-note">{[response.usage.inputTokens != null && `${response.usage.inputTokens} input tokens`, response.usage.outputTokens != null && `${response.usage.outputTokens} output tokens`, response.usage.totalTokens != null && `${response.usage.totalTokens} total tokens`].filter(Boolean).join(' · ')}</p>}
     {failed && onRetry && <Button quiet onClick={onRetry}>Retry response</Button>}
+    <Button quiet aria-expanded={contextOpen} onClick={() => setContextRequest(contextOpen ? null : response.requestId)}>{contextOpen ? 'Close request context' : 'Inspect request context'}</Button>
+    {contextOpen && <Suspense fallback={<p className="help" role="status">Loading context inspector…</p>}><ContextInspector key={response.requestId} requestId={response.requestId} /></Suspense>}
   </section>;
 }

@@ -22,6 +22,8 @@ const EMIT_INTERVAL: Duration = Duration::from_millis(100);
 /// A selected provider target. The bearer is deliberately not serializable or debuggable.
 pub struct Target {
     pub provider: String,
+    pub account_id: Option<String>,
+    pub credential_id: Option<String>,
     pub model: String,
     pub endpoint: Url,
     pub api: WireApi,
@@ -141,25 +143,51 @@ where
             })
             .map_err(anyhow::Error::from)
             .and_then(|(request, metadata)| {
-                store.save_request_context(
+                store.save_attributed_request_context(
                     pending.id,
                     &target.provider,
+                    target.account_id.as_deref(),
+                    target.credential_id.as_deref(),
                     &target.model,
                     &request,
                     &metadata,
                     input.history_omitted,
                 )
             });
-        if snapshot.is_err() {
-            return finish_error(
+        let context_id = match snapshot {
+            Ok(snapshot) => snapshot.id,
+            Err(_) => {
+                return finish_error(
+                    &mut store,
+                    &pending,
+                    state,
+                    "Could not save request context; nothing was sent for this attempt".into(),
+                    &mut on_state,
+                )
+            }
+        };
+        let kind = match pending.kind {
+            RequestKind::Question => "question",
+            RequestKind::Transcript => "transcript",
+        };
+        let admission = match target.credential_id.as_deref() {
+            Some(key) => store.begin_api_usage(context_id, kind, key),
+            None => store
+                .begin_usage(context_id, kind)
+                .map(crate::store::ApiAdmission::Allowed),
+        };
+        let usage_id = match admission {
+            Ok(crate::store::ApiAdmission::Allowed(id)) => id,
+            Ok(crate::store::ApiAdmission::Blocked(_)) => continue,
+            Err(_) => return finish_error(
                 &mut store,
                 &pending,
                 state,
-                "Could not save request context; nothing was sent for this attempt".into(),
+                "Could not record usage or check local API caps; nothing was sent for this attempt"
+                    .into(),
                 &mut on_state,
-            );
-        }
-        drop(snapshot);
+            ),
+        };
         state.context_omitted = input.history_omitted || !compiled.metadata.omissions.is_empty();
         state.provider = Some(target.provider.clone());
         state.model = Some(target.model.clone());
@@ -169,6 +197,9 @@ where
 
         let mut answer = state.answer.clone();
         let mut checkpoint_error = false;
+        let started = Instant::now();
+        let mut first_token_ms = None;
+        let mut reported_usage = StreamUsage::default();
         let stream_result = {
             let stream = inference::stream(
                 &input.client,
@@ -180,6 +211,9 @@ where
                     if answer.len().saturating_add(delta.len()) > MAX_ANSWER {
                         checkpoint_error = true;
                         return false;
+                    }
+                    if !delta.is_empty() && first_token_ms.is_none() {
+                        first_token_ms = Some(started.elapsed().as_millis() as i64);
                     }
                     answer.push_str(delta);
                     let now = Instant::now();
@@ -206,6 +240,7 @@ where
                     }
                     true
                 },
+                |usage| reported_usage = usage.clone(),
             );
             match select(
                 Box::pin(stream),
@@ -220,6 +255,67 @@ where
                 Either::Right((_, _stream)) => None,
             }
         };
+
+        let total_ms = started.elapsed().as_millis() as i64;
+        let (outcome, error_code, limit_hit) = match &stream_result {
+            None => (
+                if answer.is_empty() {
+                    "cancelled"
+                } else {
+                    "partial"
+                },
+                None,
+                false,
+            ),
+            Some(Ok(_)) => ("ok", None, false),
+            Some(Err(failure)) => {
+                let limited = failure.kind == FailureKind::Limited;
+                let fallback = answer.is_empty()
+                    && target_index + 1 < input.targets.len()
+                    && should_fallback(failure, input.targets[target_index + 1].allow_fallback);
+                (
+                    if !answer.is_empty() {
+                        "partial"
+                    } else if fallback {
+                        "fell_back"
+                    } else if limited {
+                        "limited"
+                    } else {
+                        "error"
+                    },
+                    failure.code.as_deref(),
+                    limited,
+                )
+            }
+        };
+        // Record only returned counts. Estimates belong to the context inspector, not billing.
+        let recorded = store.finish_usage(
+            usage_id,
+            outcome,
+            reported_usage
+                .input_tokens
+                .and_then(|n| i64::try_from(n).ok()),
+            reported_usage
+                .output_tokens
+                .and_then(|n| i64::try_from(n).ok()),
+            reported_usage
+                .cached_tokens
+                .and_then(|n| i64::try_from(n).ok()),
+            first_token_ms,
+            total_ms,
+            error_code,
+            limit_hit,
+        );
+        if recorded.is_err() {
+            return finish_error(
+                &mut store,
+                &pending,
+                state,
+                "Could not finalize local usage; this attempt will not be retried automatically"
+                    .into(),
+                &mut on_state,
+            );
+        }
 
         if checkpoint_error {
             return finish_error(
@@ -322,7 +418,7 @@ where
         &mut store,
         &pending,
         state,
-        "no inference target".into(),
+        "Permitted API providers are blocked by local caps or unverified usage. Open Usage → API budgets.".into(),
         &mut on_state,
     )
 }
@@ -366,6 +462,16 @@ fn validate_targets(targets: &[Target]) -> Result<()> {
         anyhow::bail!("invalid target count")
     }
     for target in targets {
+        if target.provider != "chatgpt"
+            && target.credential_id.as_ref().is_none_or(|id| {
+                id.len() != 43
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+        {
+            anyhow::bail!("API target requires a valid credential identity");
+        }
         if target.provider.is_empty()
             || target.provider.len() > 200
             || target.provider.chars().any(char::is_control)
@@ -472,6 +578,8 @@ mod tests {
             .unwrap();
         let make_input = || DispatchInput {
             targets: vec![Target {
+                account_id: None,
+                credential_id: Some("A".repeat(43)),
                 provider: "deepseek".into(),
                 model: "model".into(),
                 endpoint: Url::parse("http://invalid.example/v1").unwrap(),
@@ -509,6 +617,46 @@ mod tests {
             store.pending_request(pending.id).unwrap().unwrap().status,
             crate::store::RequestStatus::Pending
         );
+        store
+            .save_api_budget(&crate::store::ApiBudgetInput {
+                provider: "deepseek".into(),
+                key_id: "A".repeat(43),
+                model: Some("model".into()),
+                token_cap: Some(0),
+                cost_cap_micros: None,
+                price: None,
+            })
+            .unwrap();
+        let (_cap_sender, cap_receiver) = oneshot::channel();
+        let mut cap_events = Vec::new();
+        let blocked = runtime
+            .block_on(run(make_input(), cap_receiver, |state| {
+                cap_events.push(state.status)
+            }))
+            .unwrap();
+        assert_eq!(blocked.state.status, DispatchStatus::Error);
+        assert!(blocked
+            .state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("local caps"));
+        assert!(!cap_events.contains(&DispatchStatus::Streaming));
+        assert!(store.usage_report(None).unwrap().attempts.is_empty());
+        assert_eq!(
+            store.pending_request(pending.id).unwrap().unwrap().status,
+            crate::store::RequestStatus::Pending
+        );
+        store
+            .save_api_budget(&crate::store::ApiBudgetInput {
+                provider: "deepseek".into(),
+                key_id: "A".repeat(43),
+                model: Some("model".into()),
+                token_cap: None,
+                cost_cap_micros: None,
+                price: None,
+            })
+            .unwrap();
         let (_sender, receiver) = oneshot::channel();
         let mut events = Vec::new();
         let failed = runtime
@@ -517,6 +665,11 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(failed.state.status, DispatchStatus::Error);
+        let usage = store.usage_report(None).unwrap();
+        assert_eq!(usage.attempts.len(), 1);
+        assert_eq!(usage.attempts[0].status, "error");
+        assert_eq!(usage.attempts[0].input_tokens, None);
+        assert_eq!(usage.attempts[0].account_id, None);
         let snapshot = store.request_context(pending.id, None).unwrap().unwrap();
         assert_eq!(snapshot.provider, "deepseek");
         assert_eq!(

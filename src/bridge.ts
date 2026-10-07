@@ -161,10 +161,23 @@ export const searchDocuments = (query: string): Promise<DocumentChunk[]> => desk
 export const closeDocuments = (): Promise<void> => invoke('close_documents');
 export async function openDocuments(): Promise<void> { if (desktop) await invoke('open_documents'); else window.open('?view=documents', 'harness-documents'); }
 
-export type ContextSnapshot = {
+export type ContextSnapshot = { credentialId?:string|null; accountId?:string|null;
   id: number; requestId: number; provider: string; model: string; createdAt: number; upstreamOmitted: boolean;
   request: { model: string; instructions: string | null; messages: { role: string; content: string }[] };
   metadata: { model: string; inputTokenBudget: number; responseReserveTokens: number; estimatedInputTokens: number;
     omissions: { kind: string; count: number }[]; truncations: { kind: string; id?: string; source?: string; startMs?: number; role?: string }[]; excludedIds: string[] };
 };
 export const requestContext = (requestId: number, beforeId: number | null = null): Promise<ContextSnapshot | null> => desktop ? invoke('request_context', { requestId, beforeId }) : Promise.resolve(null);
+
+export type UsageTotals = {estimatedCostMicros?:number|null;unknownCostAttempts?:number;attempts:number; inputTokens:number|null; outputTokens:number|null; cachedTokens:number|null; unknownTokenAttempts:number; limitHits:number; inFlight:number};
+export type UsageGroup = {credentialId?:string|null;provider:string; accountId:string|null; today:UsageTotals; week:UsageTotals};
+export type UsageAttempt = {credentialId?:string|null;costMicros?:number|null;id:number; requestId:number; meetingId:number; provider:string; accountId:string|null; model:string; kind:string; status:string; createdAt:number; inputTokens:number|null; outputTokens:number|null; cachedTokens:number|null; firstTokenMs:number|null; totalMs:number|null; errorCode:string|null; limitHit:boolean};
+export type UsageReport = {asOf:number; todayStart:number; weekStart:number; groups:UsageGroup[]; groupsTruncated:boolean; attempts:UsageAttempt[]; next:number|null};
+export const usageReport = (beforeId:number|null=null):Promise<UsageReport> => desktop ? invoke('usage_report',{beforeId}) : Promise.resolve({asOf:Math.floor(Date.now()/1000),todayStart:0,weekStart:0,groups:[],groupsTruncated:false,attempts:[],next:null});
+
+export type ApiPrice = {inputMicrosPerMillion:number;outputMicrosPerMillion:number;cachedMicrosPerMillion:number|null};
+export type ApiBudgetInput = {provider:string;keyId:string;model:string|null;tokenCap:number|null;costCapMicros:number|null;price:ApiPrice|null};
+export type ApiBudgetStatus = {tokenCap:number|null;costCapMicros:number|null;price:ApiPrice|null;todayTokens:number;todayCostMicros:number|null;attempts:number;unknownTokens:number;unknownCosts:number;pending:number;reason:string|null;resetAt:number};
+export type ApiBudgetProvider = {provider:'gemini'|'deepseek';model:string|null;keyId:string|null;budget:ApiBudgetStatus|null};
+export const apiBudgets = ():Promise<ApiBudgetProvider[]> => desktop ? invoke('api_budgets') : Promise.resolve([]);
+export const saveApiBudget = (input:ApiBudgetInput):Promise<void> => desktop ? invoke('save_api_budget',{input}) : Promise.reject(new Error('API budgets require the desktop app'));
