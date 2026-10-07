@@ -9,6 +9,7 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }
 }
 Invoke-Checked npm.cmd @('ci')
+Invoke-Checked npm.cmd @('run', 'prepare:model')
 Invoke-Checked npm.cmd @('run', 'build')
 Invoke-Checked cargo @('fmt', '--manifest-path', 'src-tauri/Cargo.toml', '--check')
 Invoke-Checked cargo @('test', '--manifest-path', 'src-tauri/Cargo.toml', '--no-default-features', '--locked')
