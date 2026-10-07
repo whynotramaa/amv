@@ -22,11 +22,94 @@ $exe = Get-ChildItem "$env:LOCALAPPDATA\Harness", "$env:LOCALAPPDATA\Programs\Ha
 if (-not $exe) { throw 'harness.exe was not installed.' }
 "installed: $($exe.FullName)" | Tee-Object -Append (Join-Path $Out 'result.txt')
 
+Add-Type @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class Win {
+    public delegate bool EnumProc(IntPtr hwnd, IntPtr param);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc proc, IntPtr param);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hwnd, int index);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder text, int max);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    public static List<string> Describe(uint target) {
+        var rows = new List<string>();
+        EnumWindows((hwnd, _) => {
+            uint pid; GetWindowThreadProcessId(hwnd, out pid);
+            if (pid != target) return true;
+            var title = new StringBuilder(256); GetWindowText(hwnd, title, 256);
+            var cls = new StringBuilder(256); GetClassName(hwnd, cls, 256);
+            RECT r; GetWindowRect(hwnd, out r);
+            uint affinity; GetWindowDisplayAffinity(hwnd, out affinity);
+            rows.Add(String.Format("hwnd={0} class={1} title='{2}' visible={3} minimized={4} rect=({5},{6})-({7},{8}) style=0x{9:X8} exstyle=0x{10:X8} affinity={11}",
+                hwnd, cls, title, IsWindowVisible(hwnd), IsIconic(hwnd), r.Left, r.Top, r.Right, r.Bottom, GetWindowLong(hwnd, -16), GetWindowLong(hwnd, -20), affinity));
+            return true;
+        }, IntPtr.Zero);
+        return rows;
+    }
+}
+'@
+
+function Save-Windows([string]$Name) {
+    $rows = foreach ($process in @(Get-Process harness -ErrorAction SilentlyContinue)) { [Win]::Describe([uint32]$process.Id) }
+    "--- windows $Name" | Tee-Object -Append (Join-Path $Out 'result.txt')
+    $rows | Where-Object { $_ -match 'Tao|Harness' } | Tee-Object -Append (Join-Path $Out 'result.txt')
+}
+
+# Reads the page through WebView2's DevTools port, which content protection does not hide.
+function Save-Page([string]$Name) {
+    try {
+        $targets = Invoke-RestMethod 'http://127.0.0.1:9222/json' -TimeoutSec 5
+    } catch {
+        "devtools unavailable: $_" | Tee-Object -Append (Join-Path $Out 'result.txt'); return
+    }
+    foreach ($target in @($targets | Where-Object type -eq 'page')) {
+        "--- page $Name $($target.url)" | Tee-Object -Append (Join-Path $Out 'result.txt')
+        $socket = New-Object System.Net.WebSockets.ClientWebSocket
+        $socket.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait()
+        $script:id = 0
+        $call = {
+            param($method, $params)
+            $script:id++
+            $body = @{ id = $script:id; method = $method; params = $params } | ConvertTo-Json -Depth 5 -Compress
+            $bytes = [Text.Encoding]::UTF8.GetBytes($body)
+            $socket.SendAsync([ArraySegment[byte]]$bytes, 'Text', $true, [Threading.CancellationToken]::None).Wait()
+            while ($true) {
+                $stream = New-Object IO.MemoryStream
+                do {
+                    $chunk = New-Object byte[] 65536
+                    $result = $socket.ReceiveAsync([ArraySegment[byte]]$chunk, [Threading.CancellationToken]::None).Result
+                    $stream.Write($chunk, 0, $result.Count)
+                } until ($result.EndOfMessage)
+                $reply = [Text.Encoding]::UTF8.GetString($stream.ToArray()) | ConvertFrom-Json
+                if ($reply.id -eq $script:id) { return $reply }
+            }
+        }
+        $probe = 'JSON.stringify({ href: location.href, ready: document.readyState, root: (document.getElementById("root") || {}).childElementCount, text: document.body.innerText.slice(0, 300), size: [innerWidth, innerHeight], visibility: document.visibilityState })'
+        $value = (& $call 'Runtime.evaluate' @{ expression = $probe; returnByValue = $true }).result.result.value
+        "dom: $value" | Tee-Object -Append (Join-Path $Out 'result.txt')
+        $shot = (& $call 'Page.captureScreenshot' @{ format = 'png' }).result.data
+        if ($shot) { [IO.File]::WriteAllBytes((Join-Path $Out "page-$Name.png"), [Convert]::FromBase64String($shot)) }
+        $socket.Dispose()
+    }
+}
+
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
 $app = Start-Process $exe.FullName -PassThru
 Start-Sleep -Seconds 8
 Save-Screen 'launch-8s'
+Save-Windows 'launch-8s'
 Start-Sleep -Seconds 12
 Save-Screen 'launch-20s'
+Save-Windows 'launch-20s'
+Save-Page 'launch-20s'
 $alive = -not $app.HasExited
 "alive after 20s: $alive" | Tee-Object -Append (Join-Path $Out 'result.txt')
 if (-not $alive) { "exit code: $($app.ExitCode)" | Tee-Object -Append (Join-Path $Out 'result.txt') }
@@ -36,6 +119,7 @@ if ($alive) {
     Start-Process $exe.FullName | Out-Null
     Start-Sleep -Seconds 5
     Save-Screen 'second-launch'
+    Save-Windows 'second-launch'
     "processes after second launch: $(@(Get-Process harness -ErrorAction SilentlyContinue).Count)" | Tee-Object -Append (Join-Path $Out 'result.txt')
 }
 
