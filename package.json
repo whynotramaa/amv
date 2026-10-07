@@ -10,7 +10,8 @@
     "test": "npm run check",
     "prepare:model": "node scripts/prepare-model.mjs",
     "tauri": "tauri",
-    "check:ui": "node scripts/check-response-ui.mjs"
+    "check:ui": "node scripts/check-response-ui.mjs",
+    "check:memory": "node scripts/check-memory-ui.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.0",

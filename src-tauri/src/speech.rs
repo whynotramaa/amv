@@ -1,15 +1,7 @@
-//! Local speech worker.
-//!
-//! Dependency note for the parent: `whisper-rs = 0.16` with default features
-//! disabled is the CPU-only whisper.cpp path. Its build script enables no GGML
-//! accelerator by default; it needs a C++ compiler, CMake and bindgen/clang.
-//! `WHISPER_DONT_GENERATE_BINDINGS=1` is the only special escape hatch when
-//! bindgen cannot run. `webrtc-vad = 0.4` accepts 16 kHz i16 frames of exactly
-//! 160, 320, or 480 samples; this worker intentionally uses 320. `hound` is
-//! probe-only and stays a dev-dependency. No model is downloaded here.
+//! Local speech worker using Parakeet TDT through sherpa-onnx.
 
 use crate::audio::{AudioSource, CaptureSession};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -18,7 +10,9 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use webrtc_vad::{SampleRate, Vad, VadMode};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use sherpa_onnx::{
+    OfflineModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig,
+};
 
 pub const FRAME_SAMPLES: usize = 320;
 pub const MAX_OUTPUTS: usize = 32;
@@ -78,11 +72,7 @@ pub struct SpeechSession {
 impl SpeechSession {
     pub fn start(config: SpeechConfig) -> Result<Self, String> {
         validate_config(&config)?;
-        let context = WhisperContext::new_with_params(
-            &config.model_path,
-            WhisperContextParameters::default(),
-        )
-        .map_err(|error| format!("load whisper model: {error}"))?;
+        let context = load_recognizer(&config.model_path)?;
         let capture = CaptureSession::start(config.selected_mic_id.as_deref())?;
         let (tx, events) = mpsc::sync_channel(MAX_OUTPUTS);
         let stop = Arc::new(AtomicBool::new(false));
@@ -139,8 +129,8 @@ fn validate_config(config: &SpeechConfig) -> Result<(), String> {
     if config.model_path.as_os_str().is_empty() {
         return Err("model_path is required".into());
     }
-    if !config.model_path.is_file() {
-        return Err("model_path is not a readable file".into());
+    if !config.model_path.join("tokens.txt").is_file() {
+        return Err("Speech model files are missing. Reinstall Harness.".into());
     }
     if config.pre_roll > Duration::from_secs(15)
         || config.silence.is_zero()
@@ -281,7 +271,7 @@ struct Utterance {
 }
 
 fn speech_worker(
-    context: WhisperContext,
+    context: OfflineRecognizer,
     capture: CaptureSession,
     config: SpeechConfig,
     tx: SyncSender<SpeechEvent>,
@@ -454,30 +444,36 @@ fn queue_utterance(
     }
 }
 
-/// A bounded, CPU-only decode shared by the meeting worker and the WAV probe.
-pub fn decode(context: &WhisperContext, samples: &[f32]) -> Result<String, String> {
+pub fn load_recognizer(dir: &Path) -> Result<OfflineRecognizer, String> {
+    let file = |name: &str| Some(dir.join(name).to_string_lossy().into_owned());
+    let threads = thread::available_parallelism().map_or(1, |n| n.get().min(4));
+    let config = OfflineRecognizerConfig {
+        model_config: OfflineModelConfig {
+            transducer: OfflineTransducerModelConfig {
+                encoder: file("encoder.int8.onnx"),
+                decoder: file("decoder.int8.onnx"),
+                joiner: file("joiner.int8.onnx"),
+            },
+            tokens: file("tokens.txt"),
+            num_threads: threads as i32,
+            provider: Some("cpu".into()),
+            model_type: Some("nemo_transducer".into()),
+            ..Default::default()
+        },
+        decoding_method: Some("greedy_search".into()),
+        ..Default::default()
+    };
+    OfflineRecognizer::create(&config).ok_or_else(|| "Couldn't load the speech model".into())
+}
+
+pub fn decode(context: &OfflineRecognizer, samples: &[f32]) -> Result<String, String> {
     if samples.is_empty() || samples.len() > 15 * 16000 || samples.iter().any(|x| !x.is_finite()) {
         return Err("Speech decode requires finite audio between 0 and 15 seconds".into());
     }
-    let mut state = context.create_state().map_err(|error| error.to_string())?;
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    let threads = thread::available_parallelism().map_or(1, |n| n.get().min(4));
-    params.set_n_threads(threads as i32);
-    params.set_language(Some("en"));
-    params.set_no_context(true);
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    params.set_abort_callback_safe(move || std::time::Instant::now() >= deadline);
-    state
-        .full(params, samples)
-        .map_err(|error| error.to_string())?;
-    let text = state
-        .as_iter()
-        .map(|segment| segment.to_string())
-        .collect::<String>();
+    let stream = context.create_stream();
+    stream.accept_waveform(16000, samples);
+    context.decode(&stream);
+    let text = stream.get_result().map(|result| result.text).unwrap_or_default();
     if text.len() > 64 * 1024 {
         return Err("Speech output exceeded its bound".into());
     }
@@ -485,7 +481,7 @@ pub fn decode(context: &WhisperContext, samples: &[f32]) -> Result<String, Strin
 }
 
 fn transcribe(
-    context: &WhisperContext,
+    context: &OfflineRecognizer,
     utterance: Utterance,
     id: u64,
     tx: &SyncSender<SpeechEvent>,

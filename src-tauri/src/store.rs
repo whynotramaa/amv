@@ -3,7 +3,10 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::Duration};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
+const MAX_MEMORY_BODY: usize = 16 * 1024;
+const MAX_MEMORY_PAGE: usize = 50;
+const MAX_MEMORY_PAGE_BYTES: usize = 64 * 1024;
 
 const MAX_MEETING_TITLE: usize = 200;
 const MAX_TRANSCRIPT_TEXT: usize = 64 * 1024;
@@ -17,6 +20,38 @@ const MAX_REQUEST_TEXT: usize = 64 * 1024;
 const MAX_ANSWER: usize = 256 * 1024;
 const MAX_HISTORY_BYTES: usize = 64 * 1024;
 const MAX_REQUEST_ID_TEXT: usize = 200;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntry {
+    pub id: i64,
+    pub title: String,
+    pub body: String,
+    pub category: String,
+    pub project: Option<String>,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryPage {
+    pub entries: Vec<MemoryEntry>,
+    pub has_more: bool,
+    pub next: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryInput {
+    pub title: String,
+    pub body: String,
+    pub category: String,
+    pub project: Option<String>,
+    pub enabled: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeetingStatus {
@@ -329,6 +364,10 @@ impl Store {
                 tx.execute_batch(include_str!("../migrations/006_transcript_slices.sql"))
                     .context("migrate transcript slices")?;
             }
+            if version < 7 {
+                tx.execute_batch(include_str!("../migrations/007_manual_memory.sql"))
+                    .context("migrate manual memory")?;
+            }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .context("set schema version")?;
             tx.commit().context("commit migration")?;
@@ -529,6 +568,19 @@ impl Store {
         };
         tx.commit().context("commit meeting creation")?;
         Ok(meeting)
+    }
+
+    pub fn set_meeting_response(&mut self, id: i64, settings: &Settings) -> Result<()> {
+        validate_id(id, "meeting")?;
+        settings.validate()?;
+        let mut snapshot = read_meeting(&self.conn, id)?.settings_snapshot;
+        snapshot.response_mode = settings.response_mode.clone();
+        snapshot.custom_instruction = settings.custom_instruction.clone();
+        self.conn.execute(
+            "UPDATE meetings SET settings_snapshot = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&snapshot)?, id],
+        )?;
+        Ok(())
     }
 
     pub fn transition_meeting(&mut self, id: i64, next: MeetingStatus, at: i64) -> Result<Meeting> {
@@ -1273,6 +1325,159 @@ impl Store {
         })
     }
 
+    pub fn save_memory(
+        &self,
+        id: Option<i64>,
+        input: &MemoryInput,
+        now: i64,
+    ) -> Result<MemoryEntry> {
+        validate_time(now)?;
+        let title = input.title.trim();
+        let body = input.body.trim();
+        let project = input
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        if title.is_empty()
+            || title.len() > 800
+            || title.chars().count() > 200
+            || title.chars().any(char::is_control)
+        {
+            bail!("memory title must be 1 to 200 characters / 800 bytes without controls");
+        }
+        if body.is_empty() || body.len() > MAX_MEMORY_BODY {
+            bail!("memory body must be 1 to {MAX_MEMORY_BODY} bytes");
+        }
+        if project.is_some_and(|p| {
+            p.len() > 400 || p.chars().count() > 100 || p.chars().any(char::is_control)
+        }) {
+            bail!("memory project must be at most 100 characters / 400 bytes without controls");
+        }
+        if !matches!(
+            input.category.as_str(),
+            "project"
+                | "person"
+                | "organization"
+                | "preference"
+                | "note"
+                | "decision"
+                | "experience"
+                | "education"
+                | "term"
+        ) {
+            bail!("invalid memory category");
+        }
+        let id = match id {
+            Some(id) => {
+                validate_id(id, "memory")?;
+                if self.conn.execute(
+                    "UPDATE memories SET title=?1, body=?2, category=?3, project=?4, enabled=?5, updated_at=?6 WHERE id=?7 AND source='manual' AND created_at<=?6 AND updated_at<=?6",
+                    params![title, body, input.category, project, input.enabled, now, id],
+                )? != 1 {
+                    bail!("manual memory missing or update time predates the saved memory");
+                }
+                id
+            }
+            None => {
+                self.conn.execute(
+                    "INSERT INTO memories(title,body,category,project,enabled,created_at,updated_at,source) VALUES (?1,?2,?3,?4,?5,?6,?6,'manual')",
+                    params![title, body, input.category, project, input.enabled, now],
+                )?;
+                self.conn.last_insert_rowid()
+            }
+        };
+        self.get_memory(id)
+    }
+
+    pub fn get_memory(&self, id: i64) -> Result<MemoryEntry> {
+        validate_id(id, "memory")?;
+        let mut statement = self.conn.prepare("SELECT id,title,body,category,project,enabled,created_at,updated_at,source FROM memories WHERE id=?1")?;
+        let mut rows = statement.query([id])?;
+        memory_from_row(rows.next()?.context("memory not found")?)
+    }
+
+    pub fn delete_memory(&self, id: i64) -> Result<()> {
+        validate_id(id, "memory")?;
+        if self
+            .conn
+            .execute("DELETE FROM memories WHERE id=?1", [id])?
+            != 1
+        {
+            bail!("memory not found");
+        }
+        Ok(())
+    }
+
+    pub fn list_memories(&self, before_id: Option<i64>, limit: usize) -> Result<Vec<MemoryEntry>> {
+        Ok(self.list_memory_page(before_id, limit)?.entries)
+    }
+
+    pub fn list_memory_page(&self, before_id: Option<i64>, limit: usize) -> Result<MemoryPage> {
+        validate_memory_limit(limit)?;
+        if let Some(id) = before_id {
+            validate_id(id, "memory cursor")?;
+        }
+        let mut statement = self.conn.prepare("SELECT id,title,body,category,project,enabled,created_at,updated_at,source FROM memories WHERE (?1 IS NULL OR id<?1) ORDER BY id DESC LIMIT ?2")?;
+        let mut rows = statement.query(params![before_id, (limit + 1) as i64])?;
+        let mut entries = Vec::new();
+        let mut bytes = 0;
+        let mut has_more = false;
+        while let Some(row) = rows.next()? {
+            let body_bytes = row.get_ref(2)?.as_str()?.len();
+            if body_bytes > MAX_MEMORY_BODY {
+                bail!("stored memory body exceeds its bound");
+            }
+            if entries.len() == limit || bytes + body_bytes > MAX_MEMORY_PAGE_BYTES {
+                has_more = true;
+                break;
+            }
+            entries.push(memory_from_row(row)?);
+            bytes += body_bytes;
+        }
+        let next = if has_more {
+            entries.last().map(|entry| entry.id)
+        } else {
+            None
+        };
+        Ok(MemoryPage {
+            entries,
+            has_more,
+            next,
+        })
+    }
+
+    pub fn search_memories(
+        &self,
+        query: &str,
+        limit: usize,
+        enabled_only: bool,
+    ) -> Result<Vec<MemoryEntry>> {
+        self.search_memory_rows(query, limit, enabled_only, false, MAX_MEMORY_PAGE_BYTES)
+    }
+
+    pub fn retrieve_memories(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>> {
+        if !(1..=8).contains(&limit) {
+            bail!("memory retrieval limit must be between 1 and 8");
+        }
+        self.search_memory_rows(query, limit, true, true, MAX_MEMORY_BODY)
+    }
+
+    fn search_memory_rows(
+        &self,
+        query: &str,
+        limit: usize,
+        enabled_only: bool,
+        any_term: bool,
+        max_bytes: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        validate_memory_limit(limit)?;
+        let query = literal_search_query_with(query, any_term)?;
+        let mut statement = self.conn.prepare("SELECT m.id,m.title,m.body,m.category,m.project,m.enabled,m.created_at,m.updated_at,m.source FROM memories AS m JOIN memories_fts ON memories_fts.rowid=m.id WHERE memories_fts MATCH ?1 AND (?2=0 OR m.enabled=1) ORDER BY bm25(memories_fts, 3.0, 1.0, 2.0), m.id DESC LIMIT ?3")?;
+        let rows = statement.query(params![query, enabled_only, limit as i64])?;
+        collect_memories(rows, max_bytes)
+    }
+
     pub fn search_transcripts(
         &self,
         meeting_id: i64,
@@ -1284,17 +1489,7 @@ impl Store {
         if !(1..=MAX_SAVED_MEETINGS).contains(&limit) {
             bail!("transcript search limit must be between 1 and {MAX_SAVED_MEETINGS}");
         }
-        if query.trim().is_empty() || query.len() > MAX_TRANSCRIPT_SEARCH_QUERY {
-            bail!("transcript search query must be 1 to {MAX_TRANSCRIPT_SEARCH_QUERY} bytes");
-        }
-        let terms: Vec<_> = query
-            .split_whitespace()
-            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-            .collect();
-        if terms.is_empty() || terms.len() > MAX_TRANSCRIPT_SEARCH_TERMS {
-            bail!("transcript search query must contain 1 to {MAX_TRANSCRIPT_SEARCH_TERMS} terms");
-        }
-        let fts_query = terms.join(" AND ");
+        let fts_query = literal_search_query(query)?;
         let mut statement = self.conn.prepare(
             "SELECT t.id, t.meeting_id, t.event_id, t.source, t.start_ms,
                     t.end_ms, t.revision, t.text
@@ -1321,6 +1516,69 @@ impl Store {
         }
         Ok(results)
     }
+}
+
+fn literal_search_query(query: &str) -> Result<String> {
+    literal_search_query_with(query, false)
+}
+
+fn literal_search_query_with(query: &str, any_term: bool) -> Result<String> {
+    if query.trim().is_empty() || query.len() > MAX_TRANSCRIPT_SEARCH_QUERY {
+        bail!("search query must be 1 to {MAX_TRANSCRIPT_SEARCH_QUERY} bytes");
+    }
+    let terms: Vec<_> = query
+        .split_whitespace()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect();
+    if terms.is_empty() || terms.len() > MAX_TRANSCRIPT_SEARCH_TERMS {
+        bail!("search query must contain 1 to {MAX_TRANSCRIPT_SEARCH_TERMS} terms");
+    }
+    Ok(terms.join(if any_term { " OR " } else { " AND " }))
+}
+
+fn validate_memory_limit(limit: usize) -> Result<()> {
+    if !(1..=MAX_MEMORY_PAGE).contains(&limit) {
+        bail!("memory limit must be between 1 and {MAX_MEMORY_PAGE}");
+    }
+    Ok(())
+}
+
+fn memory_from_row(row: &rusqlite::Row<'_>) -> Result<MemoryEntry> {
+    // Inspect SQLite's borrowed values before allocating untrusted persisted text.
+    for (index, maximum) in [(1, 800), (2, MAX_MEMORY_BODY), (3, 20), (4, 400), (8, 20)] {
+        let value = row.get_ref(index)?;
+        if !matches!(value, rusqlite::types::ValueRef::Null) && value.as_str()?.len() > maximum {
+            bail!("stored memory field exceeds its bound");
+        }
+    }
+    Ok(MemoryEntry {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        body: row.get(2)?,
+        category: row.get(3)?,
+        project: row.get(4)?,
+        enabled: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        source: row.get(8)?,
+    })
+}
+
+fn collect_memories(mut rows: rusqlite::Rows<'_>, max_bytes: usize) -> Result<Vec<MemoryEntry>> {
+    let mut results = Vec::new();
+    let mut bytes = 0;
+    while let Some(row) = rows.next()? {
+        let body_bytes = row.get_ref(2)?.as_str()?.len();
+        if body_bytes > MAX_MEMORY_BODY {
+            bail!("stored memory body exceeds its bound");
+        }
+        if bytes + body_bytes > max_bytes {
+            break;
+        }
+        results.push(memory_from_row(row)?);
+        bytes += body_bytes;
+    }
+    Ok(results)
 }
 
 fn validate_id(id: i64, kind: &str) -> Result<()> {
@@ -1536,6 +1794,127 @@ mod tests {
 
     fn test_path(prefix: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("{prefix}-{}.sqlite", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn manual_memory_upgrade_persistence_literal_search_and_bounds() -> Result<()> {
+        let path =
+            std::env::temp_dir().join(format!("harness-memory-{}.sqlite", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            // Exercise the actual previous-schema upgrade without changing other data.
+            let old = Store::open(&path)?;
+            old.conn.execute_batch("DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; PRAGMA user_version=6;")?;
+            let settings = old.settings()?;
+            drop(old);
+            let store = Store::open(&path)?;
+            assert_eq!(store.settings()?, settings);
+            assert_eq!(
+                store
+                    .conn
+                    .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
+                7
+            );
+            let mut input = MemoryInput {
+                title: "  Budget OR review  ".into(),
+                body: "alpha beta résumé 界".into(),
+                category: "decision".into(),
+                project: Some("  Atlas  ".into()),
+                enabled: false,
+            };
+            let first = store.save_memory(None, &input, 100)?;
+            assert_eq!(first.title, "Budget OR review");
+            assert_eq!(first.project.as_deref(), Some("Atlas"));
+            assert_eq!(first.source, "manual");
+            assert!(!first.enabled);
+            assert_eq!(
+                store.search_memories("alpha OR", 5, false)?,
+                vec![first.clone()]
+            );
+            assert!(store
+                .search_memories("alpha OR nonexistent", 5, false)?
+                .is_empty());
+            assert_eq!(store.search_memories("\"alpha\"", 5, false)?.len(), 1);
+            assert_eq!(store.search_memories("résumé 界", 5, false)?.len(), 1);
+            assert!(store.search_memories("alpha", 5, true)?.is_empty());
+            assert!(store.retrieve_memories("alpha missing", 5)?.is_empty());
+            input.enabled = true;
+            input.title = "Revised review".into();
+            input.body = "gamma 界".into();
+            input.project = Some("   ".into());
+            let edited = store.save_memory(Some(first.id), &input, 200)?;
+            assert_eq!(edited.created_at, 100);
+            assert_eq!(edited.updated_at, 200);
+            assert_eq!(edited.project, None);
+            assert!(store.search_memories("alpha", 5, false)?.is_empty());
+            assert_eq!(
+                store.retrieve_memories("gamma missing", 5)?,
+                vec![edited.clone()]
+            );
+            assert!(store.search_memories("gamma missing", 5, false)?.is_empty());
+            assert!(store.save_memory(Some(first.id), &input, 150).is_err());
+            assert!(store.save_memory(Some(999999), &input, 300).is_err());
+            drop(store);
+            let store = Store::open(&path)?;
+            assert_eq!(store.get_memory(first.id)?, edited);
+            store.delete_memory(first.id)?;
+            assert!(store.get_memory(first.id).is_err());
+            assert!(store.delete_memory(first.id).is_err());
+            assert!(store.search_memories("gamma", 5, false)?.is_empty());
+            input.body = "界".repeat(MAX_MEMORY_BODY / 3);
+            let mut ids = Vec::new();
+            for index in 0..6 {
+                input.title = format!("Unicode {index}");
+                ids.push(store.save_memory(None, &input, 300)?.id);
+            }
+            let page = store.list_memory_page(None, 50)?;
+            assert_eq!(page.entries.len(), 4);
+            assert!(page.has_more);
+            assert_eq!(page.next, Some(ids[2]));
+            let rest = store.list_memory_page(page.next, 50)?;
+            assert_eq!(rest.entries.len(), 2);
+            assert!(!rest.has_more);
+            assert_eq!(rest.next, None);
+            assert_eq!(store.list_memories(None, 50)?.len(), 4);
+            assert_eq!(store.search_memories("Unicode", 50, false)?.len(), 4);
+            let retrieved = store.retrieve_memories("Unicode", 8)?;
+            assert_eq!(retrieved.len(), 1);
+            assert!(retrieved.iter().map(|e| e.body.len()).sum::<usize>() <= MAX_MEMORY_BODY);
+            assert!(store.list_memories(None, 0).is_err());
+            assert!(store.list_memories(Some(0), 5).is_err());
+            assert!(store.search_memories("x", 51, false).is_err());
+            assert!(store.search_memories(" ", 5, false).is_err());
+            assert!(store.search_memories(&"x".repeat(513), 5, false).is_err());
+            assert!(store.search_memories(&"x ".repeat(17), 5, false).is_err());
+            assert!(store.retrieve_memories("x", 9).is_err());
+            input.body.push('界');
+            assert!(store.save_memory(None, &input, 300).is_err());
+            input.body = "ok".into();
+            input.title = "a".repeat(201);
+            assert!(store.save_memory(None, &input, 300).is_err());
+            input.title = "ok".into();
+            input.project = Some("a".repeat(101));
+            assert!(store.save_memory(None, &input, 300).is_err());
+            input.project = None;
+            input.category = "arbitrary".into();
+            assert!(store.save_memory(None, &input, 300).is_err());
+            input.category = "note".into();
+            assert!(store.save_memory(None, &input, -1).is_err());
+            // Even an externally damaged database cannot force unbounded text allocation.
+            store
+                .conn
+                .execute_batch("PRAGMA ignore_check_constraints=ON;")?;
+            store.conn.execute(
+                "UPDATE memories SET body=?1 WHERE id=?2",
+                params!["z".repeat(MAX_MEMORY_BODY + 1), ids[5]],
+            )?;
+            assert!(store.get_memory(ids[5]).is_err());
+            assert!(store.list_memories(None, 5).is_err());
+            Ok(())
+        })();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+        result
     }
 
     #[test]

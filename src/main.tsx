@@ -1,5 +1,7 @@
-import { StrictMode } from 'react';
+import { lazy, Suspense, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 
-createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>);
+const MemoryView = lazy(() => import('./components/MemoryView'));
+const memoryWindow = new URLSearchParams(location.search).get('view') === 'memory';
+createRoot(document.getElementById('root')!).render(<StrictMode>{memoryWindow ? <main className="memory-window"><Suspense fallback={<p role="status">Loading local memory…</p>}><MemoryView /></Suspense></main> : <App />}</StrictMode>);

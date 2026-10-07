@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-07T03:13:45.703331+00:00",
+  "generatedAt": "2026-10-07T03:59:24.355110+00:00",
   "title": "Design System: Harness",
   "extensions": {
     "colorMeta": {
@@ -363,9 +363,9 @@
       "css": ".ds-transcript { display: grid; gap: var(--space-3); max-height: 300px; overflow: auto; border-top: 1px solid var(--border-subtle); padding-top: var(--space-4); } .ds-transcript-line { display: grid; grid-template-columns: 52px 36px 1fr; gap: var(--space-2); align-items: start; font-size: var(--font-size-sm); } .ds-transcript-line > :is(:first-child, time) { color: var(--text-muted); font-family: var(--font-code); font-size: var(--font-size-xs); }"
     },
     {
-      "name": "Unavailable Remote Composer",
+      "name": "Meeting question composer",
       "kind": "custom",
-      "description": "Disabled question input and send action with explicit unavailable copy; no remote capture or answering is implied.",
+      "description": "Provider-availability-driven question input with explicit microphone opt-in, manual new-speech send, cancellation and connection access. Preview actions remain unavailable.",
       "html": "<div class=\"ds-composer\"><input disabled placeholder=\"Meeting questions aren't available yet\" /><button class=\"ds-icon-button\" disabled aria-label=\"Send question\">\u2191</button></div>",
       "css": ".ds-composer { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-elevated); } .ds-composer input { min-width: 0; width: 100%; height: var(--control-compact); border: 0; background: transparent; color: var(--text-primary); } .ds-composer input:disabled, .ds-composer .ds-icon-button:disabled { cursor: not-allowed; color: var(--text-muted); }"
     },
@@ -380,6 +380,11 @@
       "name": "Streaming response",
       "kind": "section",
       "description": "A restrained answer with provider/model metadata, partial/error state, omitted-context disclosure, actual usage and expandable transcript. Poppins text, Geist Mono code, existing tokens, no shadows."
+    },
+    {
+      "name": "Local memory management",
+      "description": "Separate normal-size library/editor view using the existing neutral tokens, Poppins and original book icon. Default-off answer permission, manual provenance, explicit search, bounded replacing pages, retained failed-save drafts, inline discard/delete/close confirmation. No shadows; narrow layouts stack.",
+      "html": "<section><h2>Memory</h2><p>New entries stay local until enabled for relevant authorized answers.</p></section>"
     }
   ],
   "narrative": {

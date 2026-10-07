@@ -203,3 +203,10 @@ The lazy answer renderer uses React Markdown with remark-gfm and memoized code t
 A response collapses the finalized transcript, which remains keyboard-expandable using the original chevron icon. Next-meeting preferences are disclosed separately from the active meeting. Saved history offers Open in assistant without restarting capture or automatic permission. Custom instructions enforce both character and UTF-8 byte bounds.
 
 The response fixture checks 520×600 and 420×360 layouts, consent, attempt ordering, GFM, code/copy, unsafe HTML/links/images and saved restore. Screenshots are synthetic IPC proofs. Native rendering, eligible OAuth, real fallback, voice concurrency, memory and clipboard acceptance remain pending.
+
+
+## Local memory management
+
+An original book icon and tray item open a dedicated normal-size management window. The window reuses Poppins, existing spacing/controls, neutral surfaces and thin borders. A narrow library column and wider editor share deliberate edges; below 700 px they stack. Rows show category/project and local-only or enabled status. They replace previous pages rather than accumulating.
+
+The editor uses labeled title/category/project/text controls, manual-source dates, explicit default-off answer permission, quiet deletion and a restrained save action. Inline confirmations protect unsaved selections and closing. Failed saves/deletes retain the draft. Search runs only on submit. This surface does not start capture or a model request. Closing releases its WebView after any required draft confirmation. Native Windows lifecycle, content protection and RAM acceptance remain pending; memory fixture screenshots use mocked IPC.

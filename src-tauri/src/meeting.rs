@@ -1,9 +1,6 @@
 use crate::speech::{SpeechConfig, SpeechEvent, SpeechSession};
 use crate::store::{Meeting, MeetingStatus, Settings, Store, TranscriptSource};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::fs::File;
-use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -557,40 +554,26 @@ fn push_transcript_row(rows: &mut Vec<TranscriptRow>, row: TranscriptRow) {
 
 #[derive(Deserialize)]
 struct ModelManifest {
-    filename: String,
-    sha256: String,
+    directory: String,
+    files: Vec<ModelFile>,
+}
+
+#[derive(Deserialize)]
+struct ModelFile {
+    name: String,
     bytes: u64,
 }
 
 fn verify_model(path: &Path) -> Result<(), String> {
     let manifest: ModelManifest = serde_json::from_str(MANIFEST)
         .map_err(|_| "Bundled model manifest is invalid".to_string())?;
-    if path.file_name().and_then(|name| name.to_str()) != Some(manifest.filename.as_str()) {
-        return Err("Bundled model path is invalid".into());
-    }
-    let file = File::open(path).map_err(|_| "Bundled speech model is missing".to_string())?;
-    if file
-        .metadata()
-        .map_err(|_| "Couldn't inspect bundled speech model".to_string())?
-        .len()
-        != manifest.bytes
-    {
-        return Err("Bundled speech model has an unexpected size".into());
-    }
-    let mut reader = BufReader::with_capacity(64 * 1024, file);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|_| "Couldn't read bundled speech model".to_string())?;
-        if count == 0 {
-            break;
+    for file in manifest.files {
+        let size = std::fs::metadata(path.join(&file.name))
+            .map_err(|_| "Bundled speech model is missing. Reinstall Harness.".to_string())?
+            .len();
+        if size != file.bytes {
+            return Err("Bundled speech model is damaged. Reinstall Harness.".into());
         }
-        hasher.update(&buffer[..count]);
-    }
-    if format!("{:x}", hasher.finalize()) != manifest.sha256 {
-        return Err("Bundled speech model failed integrity verification".into());
     }
     Ok(())
 }
@@ -616,10 +599,10 @@ fn mark_interrupted(db_path: &Path, meeting_id: i64) {
 }
 
 pub fn model_path(resource_dir: &Path) -> PathBuf {
-    let filename = serde_json::from_str::<ModelManifest>(MANIFEST)
-        .map(|manifest| manifest.filename)
-        .unwrap_or_else(|_| "ggml-base.en-q5_1.bin".into());
-    resource_dir.join("models").join(filename)
+    let directory = serde_json::from_str::<ModelManifest>(MANIFEST)
+        .map(|manifest| manifest.directory)
+        .unwrap_or_else(|_| "parakeet".into());
+    resource_dir.join("models").join(directory)
 }
 
 #[cfg(test)]

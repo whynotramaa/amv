@@ -69,6 +69,14 @@ cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --example t
 
 An 11-second upstream reference clip decoded correctly in 7.28 seconds with approximately 242 MiB peak resident memory on the current Linux build host. This measures the decoder alone; it does not certify full-application performance or the Windows 8 GB target. The English default, live partial updates, device recovery and long-meeting soak checks remain pending.
 
+## Local memory
+
+Open Memory from the tray or the book icon in the assistant. It opens a separate 900×700 management window. Add a manual project, person, organization, preference, note, decision, experience, education or term. Each entry retains its manual source and creation/update times. Search, edits and deletion stay local.
+
+New entries default to local only. Enable an entry explicitly to allow relevant excerpts in authorized answers, including consented fallback providers. Local FTS5/BM25 retrieves at most eight enabled entries and 16 KiB of body text before the context compiler applies its budget. Title/project terms receive extra lexical weight. This is lexical retrieval; document import, embeddings, reranking, related-entity records and inspectable sent context remain unfinished.
+
+The window confirms before discarding unsaved changes, remains open during saves, and destroys its WebView when closed. Database and UI pages replace prior results and stay bounded. Run `npm run check:memory` with the same browser setup as the response fixture; it mocks IPC and does not prove Windows window behavior.
+
 ## UI regression
 
 With `npm run dev` running, use `npm run check:ui`. Install Playwright Chromium with `npx playwright install chromium`, or point `HARNESS_BROWSER_EXECUTABLE` at an existing Chromium/Edge executable. The check mocks native IPC and credentials. It verifies response attempts, stale events, consent, safe Markdown/code/links/images, copying, narrow layouts, and reopening a saved meeting. It does not prove Windows audio, OAuth eligibility, or native clipboard behavior.

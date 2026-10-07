@@ -42,9 +42,15 @@ pub async fn discover_models(
 ) -> Result<Vec<ModelInfo>> {
     use futures_util::StreamExt;
     let request = async {
-        let response = client
-            .get(endpoint)
-            .bearer_auth(bearer)
+        let mut request = client.get(endpoint).bearer_auth(bearer);
+        if chatgpt {
+            if let Some(account) = crate::auth::chatgpt_account_id(bearer) {
+                request = request
+                    .header("chatgpt-account-id", account)
+                    .header("originator", "codex_cli_rs");
+            }
+        }
+        let response = request
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("Couldn't reach the model service"))?;

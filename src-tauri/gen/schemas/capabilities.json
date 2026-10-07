@@ -1,1 +1,1 @@
-{"overlay":{"identifier":"overlay","description":"Only local overlay window actions. Core logic stays in Rust.","local":true,"windows":["overlay"],"permissions":["core:default","core:window:allow-hide","core:window:allow-start-dragging"]}}
+{"overlay":{"identifier":"overlay","description":"Local assistant and memory management windows. Core logic stays in Rust.","local":true,"windows":["overlay","management"],"permissions":["core:default","core:window:allow-hide","core:window:allow-start-dragging"]}}

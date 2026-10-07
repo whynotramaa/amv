@@ -125,16 +125,21 @@ where
         .map_err(|_| local_failure(FailureKind::InvalidRequest))?;
     authorization.set_sensitive(true);
     let first_deadline = Instant::now() + Duration::from_secs(10);
-    let response = timeout(
-        Duration::from_secs(10),
-        client
-            .post(endpoint)
-            .header(AUTHORIZATION, authorization)
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "text/event-stream")
-            .body(body)
-            .send(),
-    )
+    let mut post = client
+        .post(endpoint)
+        .header(AUTHORIZATION, authorization)
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "text/event-stream");
+    if api == WireApi::Chatgpt {
+        let account = crate::auth::chatgpt_account_id(bearer)
+            .ok_or_else(|| local_failure(FailureKind::Auth))?;
+        post = post
+            .header("chatgpt-account-id", account)
+            .header("OpenAI-Beta", "responses=experimental")
+            .header("originator", "codex_cli_rs")
+            .header("session_id", uuid::Uuid::new_v4().to_string());
+    }
+    let response = timeout(Duration::from_secs(10), post.body(body).send())
     .await
     .map_err(|_| local_failure(FailureKind::Timeout))?
     .map_err(|error| transport_failure(error.is_timeout()))?;
@@ -317,19 +322,17 @@ fn responses_body(request: &StreamRequest) -> Value {
                 instructions = Some(message.content.clone());
             }
         } else {
-            input.push(json!({ "role": message.role, "content": message.content }));
+            let kind = if message.role == "assistant" { "output_text" } else { "input_text" };
+            input.push(json!({ "type": "message", "role": message.role, "content": [{ "type": kind, "text": message.content }] }));
         }
     }
-    let mut body = json!({
+    json!({
         "model": request.model,
+        "instructions": instructions.unwrap_or_default(),
         "input": input,
         "store": false,
         "stream": true,
-    });
-    if let Some(instructions) = instructions {
-        body["instructions"] = json!(instructions);
-    }
-    body
+    })
 }
 
 fn compat_body(request: &StreamRequest) -> Value {

@@ -1,7 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "overlay",
-  "description": "Only local overlay window actions. Core logic stays in Rust.",
-  "windows": ["overlay"],
-  "permissions": ["core:default", "core:window:allow-hide", "core:window:allow-start-dragging"]
+  "description": "Local assistant and memory management windows. Core logic stays in Rust.",
+  "windows": [
+    "overlay",
+    "management"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-start-dragging"
+  ]
 }

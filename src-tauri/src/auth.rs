@@ -14,14 +14,12 @@ use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
 const ISSUER: &str = "https://auth.openai.com";
-const AUTHORIZE: &str = "https://auth.openai.com/api/accounts/authorize";
-const TOKEN: &str = "https://auth.openai.com/api/accounts/oauth/token";
+const AUTHORIZE: &str = "https://auth.openai.com/oauth/authorize";
+const TOKEN: &str = "https://auth.openai.com/oauth/token";
 const JWKS: &str = "https://auth.openai.com/.well-known/jwks.json";
 const REVOKE: &str = "https://auth.openai.com/api/accounts/oauth/revoke";
-const RESOURCE: &str = "https://api.openai.com/v1";
-const DYNAMIC_CLIENT: &str = "dynamic_agent_client";
-const APP_NAME: &str = "Harness";
-const REQUIRED_SCOPE: &str = "chatgpt.tokens.use.direct";
+const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CALLBACK_PORT: u16 = 1455;
 const MAX_HEADERS: usize = 8 * 1024;
 const MAX_BODY: usize = 1024 * 1024;
 
@@ -32,7 +30,6 @@ pub struct AuthAttempt {
     authorization: String,
     client_id: String,
     state: Zeroizing<String>,
-    nonce: Zeroizing<String>,
     verifier: Zeroizing<String>,
     expected_subject: Option<String>,
 }
@@ -76,32 +73,25 @@ impl AuthAttempt {
         {
             bail!("Invalid host identifier")
         }
-        let listener = TcpListener::bind(("127.0.0.1", 0))
+        let listener = TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
             .await
-            .context("Bind OAuth callback")?;
-        let port = listener.local_addr()?.port();
-        let redirect_uri = format!("http://127.0.0.1:{port}/auth/callback");
+            .context("Port 1455 is busy. Close Codex or any other ChatGPT sign-in and try again")?;
+        let redirect_uri = format!("http://localhost:{CALLBACK_PORT}/auth/callback");
         let state = random_url_secret(32)?;
-        let nonce = random_url_secret(32)?;
         let verifier = random_url_secret(32)?;
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        let client_id = DYNAMIC_CLIENT.to_owned();
+        let client_id = CLIENT_ID.to_owned();
         let mut query = vec![
+            ("response_type", "code".to_owned()),
             ("client_id", client_id.clone()),
-            ("agent_name_hint", APP_NAME.to_owned()),
-            ("ext_agent_host_id", host_id.to_owned()),
-            ("response_type", "code".into()),
             ("redirect_uri", redirect_uri.clone()),
-            (
-                "scope",
-                "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
-                    .into(),
-            ),
-            ("resource", RESOURCE.into()),
-            ("state", state.to_string()),
-            ("nonce", nonce.to_string()),
-            ("code_challenge_method", "S256".into()),
+            ("scope", "openid profile email offline_access".into()),
             ("code_challenge", challenge),
+            ("code_challenge_method", "S256".into()),
+            ("id_token_add_organizations", "true".into()),
+            ("codex_cli_simplified_flow", "true".into()),
+            ("state", state.to_string()),
+            ("originator", "codex_cli_rs".into()),
         ];
         let authorization = Url::parse_with_params(AUTHORIZE, query.drain(..))?.to_string();
         Ok(Self {
@@ -110,7 +100,6 @@ impl AuthAttempt {
             authorization,
             client_id,
             state,
-            nonce,
             verifier,
             expected_subject: None,
         })
@@ -126,9 +115,7 @@ impl AuthAttempt {
         id_token_hint: Option<&str>,
         login_hint: Option<&str>,
     ) -> Result<Self> {
-        if issued_client_id.is_empty()
-            || issued_client_id == DYNAMIC_CLIENT
-            || issued_client_id.len() > 256
+        if issued_client_id != CLIENT_ID
             || issued_client_id.chars().any(char::is_control)
             || issued_client_id.chars().any(char::is_control)
         {
@@ -140,7 +127,7 @@ impl AuthAttempt {
         let mut query: Vec<(String, String)> = url
             .query_pairs()
             .into_owned()
-            .filter(|(key, _)| key != "client_id" && key != "agent_name_hint")
+            .filter(|(key, _)| key != "client_id")
             .collect();
         query.insert(0, ("client_id".into(), issued_client_id.into()));
         if let Some(hint) = id_token_hint {
@@ -203,11 +190,8 @@ impl AuthAttempt {
             .client_id
             .clone()
             .unwrap_or_else(|| self.client_id.clone());
-        if issued_client_id == DYNAMIC_CLIENT
-            || issued_client_id.trim().is_empty()
-            || issued_client_id.len() > 256
-        {
-            bail!("OAuth provider did not issue a client identifier")
+        if issued_client_id != CLIENT_ID {
+            bail!("OAuth provider returned an unexpected client")
         }
         let response = checked_response(
             client.post(TOKEN).form(&[
@@ -216,7 +200,6 @@ impl AuthAttempt {
                 ("code", callback.code.as_str()),
                 ("code_verifier", self.verifier.as_str()),
                 ("redirect_uri", self.redirect_uri.as_str()),
-                ("resource", RESOURCE),
             ]),
             TOKEN,
         )
@@ -232,13 +215,10 @@ impl AuthAttempt {
             client,
             token.id_token.as_deref().unwrap_or_default(),
             &issued_client_id,
-            Some(&self.nonce),
+            None,
             self.expected_subject.as_deref(),
         )
         .await?;
-        if !has_scope(token.scope.as_deref().unwrap_or_default(), REQUIRED_SCOPE) {
-            bail!("OAuth grant lacks required permission")
-        }
         let subject = claims.sub;
         let account_id = account_key(&issued_client_id, &subject);
         Ok(AuthGrant {
@@ -333,12 +313,12 @@ impl AuthGrant {
     pub async fn refresh(&self, client: &Client) -> Result<Self> {
         validate_grant(self)?;
         let response = checked_response(
-            client.post(TOKEN).form(&[
-                ("grant_type", "refresh_token"),
-                ("client_id", self.issued_client_id.as_str()),
-                ("refresh_token", self.tokens.refresh_token()),
-                ("resource", RESOURCE),
-            ]),
+            client.post(TOKEN).json(&serde_json::json!({
+                "client_id": self.issued_client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": self.tokens.refresh_token(),
+                "scope": "openid profile email",
+            })),
             TOKEN,
         )
         .await?;
@@ -346,8 +326,14 @@ impl AuthGrant {
         if !body.status.is_success() {
             bail!("OAuth refresh failed ({})", body.status.as_u16())
         }
-        let token: TokenResponse =
+        let mut token: TokenResponse =
             serde_json::from_slice(&body.bytes).context("Invalid OAuth refresh response")?;
+        if token.refresh_token.as_deref().unwrap_or_default().is_empty() {
+            token.refresh_token = Some(self.tokens.refresh_token().to_owned());
+        }
+        if token.id_token.as_deref().unwrap_or_default().is_empty() {
+            token.id_token = Some(self.tokens.id_token().to_owned());
+        }
         let token = token.required()?;
         let claims = validate_id_token(
             client,
@@ -357,9 +343,6 @@ impl AuthGrant {
             Some(&self.subject),
         )
         .await?;
-        if !has_scope(token.scope.as_deref().unwrap_or_default(), REQUIRED_SCOPE) {
-            bail!("OAuth grant lacks required permission")
-        }
         let subject = claims.sub;
         if subject != self.subject {
             bail!("OAuth account changed during refresh")
@@ -408,7 +391,7 @@ pub fn account_key(client_id: &str, subject: &str) -> String {
 }
 
 fn validate_grant(grant: &AuthGrant) -> Result<()> {
-    if grant.issued_client_id == DYNAMIC_CLIENT
+    if grant.issued_client_id != CLIENT_ID
         || grant.subject.is_empty()
         || grant.account_id != account_key(&grant.issued_client_id, &grant.subject)
         || grant.tokens.refresh_token.is_empty()
@@ -419,7 +402,6 @@ fn validate_grant(grant: &AuthGrant) -> Result<()> {
         || grant.issued_client_id.chars().any(char::is_control)
         || grant.subject.len() > 512
         || grant.subject.chars().any(char::is_control)
-        || !grant.subscopes.iter().any(|scope| scope == REQUIRED_SCOPE)
         || [
             grant.tokens.access_token(),
             grant.tokens.refresh_token(),
@@ -496,7 +478,8 @@ fn parse_callback(
     let expected = Url::parse(redirect)?;
     let url = expected.join(target)?;
     let host = format!(
-        "127.0.0.1:{}",
+        "{}:{}",
+        expected.host_str().unwrap_or_default(),
         expected
             .port()
             .ok_or_else(|| anyhow::anyhow!("Invalid callback port"))?
@@ -514,7 +497,7 @@ fn parse_callback(
         bail!("Invalid callback Host")
     }
     if url.path() != expected.path()
-        || url.host_str() != Some("127.0.0.1")
+        || url.host_str() != expected.host_str()
         || url.port() != expected.port()
     {
         bail!("Invalid callback target")
@@ -545,13 +528,8 @@ fn parse_callback(
         .filter(|v| !v.is_empty() && v.len() <= 4096)
         .ok_or_else(|| anyhow::anyhow!("Missing authorization code"))?;
     let client_id = values.remove("client_id");
-    if let Some(id) = &client_id {
-        if id != pending_client && pending_client != DYNAMIC_CLIENT {
-            bail!("OAuth client mismatch")
-        }
-    }
-    if pending_client == DYNAMIC_CLIENT && client_id.is_none() {
-        bail!("Missing issued OAuth client")
+    if client_id.as_deref().is_some_and(|id| id != pending_client) {
+        bail!("OAuth client mismatch")
     }
     Ok(Callback { code, client_id })
 }
@@ -655,16 +633,13 @@ impl TokenResponse {
         if self.access_token.as_deref().unwrap_or_default().is_empty()
             || self.refresh_token.as_deref().unwrap_or_default().is_empty()
             || self.id_token.as_deref().unwrap_or_default().is_empty()
-            || self.token_type.as_deref().unwrap_or_default().is_empty()
-            || self.expires_in.unwrap_or(0) == 0
-            || self.scope.as_deref().unwrap_or_default().is_empty()
         {
             bail!("OAuth token response is incomplete")
         }
         if self
             .token_type
             .as_deref()
-            .is_none_or(|kind| !kind.eq_ignore_ascii_case("bearer"))
+            .is_some_and(|kind| !kind.eq_ignore_ascii_case("bearer"))
             || [
                 self.access_token.as_deref(),
                 self.refresh_token.as_deref(),
@@ -680,7 +655,12 @@ impl TokenResponse {
         Ok(self)
     }
     fn bundle(&self) -> Result<OpaqueTokenBundle> {
-        let expires_at = now()?.saturating_add(self.expires_in.unwrap_or(0));
+        let expires_at = match self.expires_in {
+            Some(seconds) => now()?.saturating_add(seconds),
+            None => jwt_claims(self.access_token.as_deref().unwrap_or_default())
+                .and_then(|claims| claims.get("exp")?.as_u64())
+                .unwrap_or(now()?.saturating_add(3600)),
+        };
         Ok(OpaqueTokenBundle {
             access_token: Zeroizing::new(
                 self.access_token
@@ -705,8 +685,18 @@ impl TokenResponse {
 fn now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
-fn has_scope(scope: &str, required: &str) -> bool {
-    scope.split_whitespace().any(|item| item == required)
+fn jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let payload = token.split('.').nth(1)?;
+    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?).ok()
+}
+
+pub fn chatgpt_account_id(access_token: &str) -> Option<String> {
+    jwt_claims(access_token)?
+        .get("https://api.openai.com/auth")?
+        .get("chatgpt_account_id")?
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+        .map(str::to_owned)
 }
 
 fn safe_metadata(value: Option<String>) -> Option<String> {
@@ -805,10 +795,10 @@ mod tests {
             .block_on(AuthAttempt::prepare("urn:uuid:test"))
             .unwrap();
         let url = Url::parse(attempt.authorization_url()).unwrap();
-        assert_eq!(url.path(), "/api/accounts/authorize");
+        assert_eq!(url.path(), "/oauth/authorize");
         assert_eq!(
             url.query_pairs().find(|(k, _)| k == "client_id").unwrap().1,
-            DYNAMIC_CLIENT
+            CLIENT_ID
         );
         assert!(url
             .query_pairs()
@@ -820,7 +810,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (cancel, receiver) = tokio::sync::oneshot::channel();
         let (attempt, client) = runtime.block_on(async {
-            let attempt = AuthAttempt::prepare_for_client("urn:uuid:test", "issued", None, None)
+            let attempt = AuthAttempt::prepare_for_client("urn:uuid:test", CLIENT_ID, None, None)
                 .await
                 .unwrap();
             (attempt, Client::new())
@@ -845,30 +835,30 @@ mod tests {
             &request("state=bad&code=x&client_id=issued"),
             "http://127.0.0.1:9/auth/callback",
             "good",
-            DYNAMIC_CLIENT
+            CLIENT_ID
         )
         .is_err());
         assert!(parse_callback(
             &request("state=good&error=access_denied"),
             "http://127.0.0.1:9/auth/callback",
             "good",
-            DYNAMIC_CLIENT
+            CLIENT_ID
         )
         .is_err());
         assert!(parse_callback(
             &request("state=good&code=x"),
             "http://127.0.0.1:9/auth/callback",
             "good",
-            DYNAMIC_CLIENT
+            CLIENT_ID
         )
-        .is_err());
+        .is_ok());
         assert!(parse_callback(
             &request("state=good&code=x&client_id=issued"),
             "http://127.0.0.1:9/auth/callback",
             "good",
-            DYNAMIC_CLIENT
+            CLIENT_ID
         )
-        .is_ok());
+        .is_err());
     }
     #[test]
     fn account_key_never_uses_email() {

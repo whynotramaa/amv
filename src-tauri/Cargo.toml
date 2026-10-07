@@ -36,7 +36,7 @@ getrandom = "0.3"
 jsonwebtoken = "9"
 zeroize = "1"
 futures-util = "0.3"
-whisper-rs = { version = "0.16", default-features = false }
+sherpa-onnx = "1.13.8"
 webrtc-vad = "0.4"
 rusqlite = { version = "0.38", features = ["bundled"] }
 log = "0.4"

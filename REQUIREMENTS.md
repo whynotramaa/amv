@@ -35,8 +35,8 @@ Evidence commands used repeatedly below:
 
 ## 0. Executive definition
 
-- [ ] `PARTIAL` PLAN 45-65: Windows-native tray agent with separate system/mic near-real-time transcription, evolving meeting state, personal memory, global-shortcut popover, local documents, retained facts, and answers grounded in all listed context types. Evidence: integrated capture/speech/meeting state, tray, and popover exist; memory, documents, retrieval, and grounded answers remain pending.
-- [ ] `PARTIAL` PLAN 67-73: official Sign in with ChatGPT eligible-plan inference; local capture, transcription, storage, meeting state, ingestion, retrieval, embeddings, memory, settings, and context assembly; remote requests limited to compiled text plus request. Evidence: OAuth/vault/streaming source and local capture/transcription/storage/meeting state exist; bounded context compilation exists; eligible live inference, ingestion, retrieval, embeddings and memory remain pending.
+- [ ] `PARTIAL` PLAN 45-65: Windows-native tray agent with separate system/mic near-real-time transcription, evolving meeting state, personal memory, global-shortcut popover, local documents, retained facts, and answers grounded in all listed context types. Evidence: integrated capture/speech/meeting state, tray, and popover exist; manual memories and bounded enabled-only lexical retrieval are integrated; document retrieval and full grounded-answer acceptance remain pending.
+- [ ] `PARTIAL` PLAN 67-73: official Sign in with ChatGPT eligible-plan inference; local capture, transcription, storage, meeting state, ingestion, retrieval, embeddings, memory, settings, and context assembly; remote requests limited to compiled text plus request. Evidence: OAuth/vault/streaming source and local capture/transcription/storage/meeting state exist; bounded context compilation exists; manual memory and lexical retrieval are implemented; eligible live inference, ingestion, hybrid retrieval and embeddings remain pending.
 
 ## 1. Non-negotiable product requirements
 
@@ -47,7 +47,7 @@ Evidence commands used repeatedly below:
 
 ### 1.2 Local-first, PLAN 112-140
 
-- [ ] `PARTIAL` Local microphone/system PCM, VAD, resampling, STT, meeting state/cache, documents, indexes, memories, records, retrieval, context selection, settings/logs, and OS-backed credentials. Evidence: PCM capture, VAD, CPU STT, meeting state/cache, transcript FTS, settings/logging, OAuth, and DPAPI vault exist; documents, memory, retrieval, and context selection do not.
+- [ ] `PARTIAL` Local microphone/system PCM, VAD, resampling, STT, meeting state/cache, documents, indexes, memories, records, retrieval, context selection, settings/logs, and OS-backed credentials. Evidence: PCM capture, VAD, CPU STT, meeting state/cache, transcript FTS, settings/logging, OAuth, and DPAPI vault exist; manual memory, lexical retrieval and bounded context selection exist; documents and hybrid retrieval remain pending.
 - [ ] `PARTIAL` Raw audio never uploads; remote receives only compiler-selected text and request. Evidence: capture and inference are separate modules and inference sends JSON text, not audio; the bounded pure compiler exists, the native dispatch boundary sends only compiled text JSON. Live acceptance remains pending.
 - [ ] `PARTIAL` Final ChatGPT inference is the only deliberately remote/local-network-dependent final step. Evidence: official OAuth and streaming inference clients exist; the final dispatch path is integrated in source and runtime-unverified.
 
@@ -71,7 +71,7 @@ Evidence commands used repeatedly below:
 
 ## 2. Product mental model, PLAN 227-273
 
-- [ ] `PARTIAL` Five local engines connected by an event bus: Windows audio, local speech, meeting state, memory/retrieval/recent transcript, and context compiler before ChatGPT. The diagram is illustrative, but each named behavior is normative. Evidence: capture, speech, meeting/store, and Tauri events exist; context compiler and final dispatcher exist; memory/retrieval remain pending.
+- [ ] `PARTIAL` Five local engines connected by an event bus: Windows audio, local speech, meeting state, memory/retrieval/recent transcript, and context compiler before ChatGPT. The diagram is illustrative, but each named behavior is normative. Evidence: capture, speech, meeting/store, and Tauri events exist; context compiler and final dispatcher exist; manual memory and enabled-only lexical retrieval exist; hybrid retrieval remains pending.
 
 ## 3. First launch, PLAN 275-353
 
@@ -85,7 +85,7 @@ Evidence commands used repeatedly below:
 
 ## 4. Day-to-day interaction, PLAN 354-490
 
-- [ ] `PARTIAL` Tray menu has Open, settings, idle listening label, and Quit; Start/Stop meeting, device labels, Memory, and full listening state are absent. Evidence: `src-tauri/src/desktop.rs:244-279`.
+- [ ] `PARTIAL` Tray menu has Open, settings, idle listening label, and Quit; Memory opens a separate management window; Start/Stop meeting, device labels and full listening state remain absent from the tray. Evidence: `src-tauri/src/desktop.rs:244-279`.
 - [ ] `RUNTIME-UNVERIFIED` Closing hides rather than terminates; Quit terminates capture/STT/DB/process. Hide, worker joins, final draining, model unload, and tray shutdown are coded; Windows runtime proof remains pending. Evidence: `src-tauri/src/desktop.rs`, `src-tauri/src/meeting.rs`, `src-tauri/src/speech.rs`, `PROGRESS.md`.
 - [ ] `RUNTIME-UNVERIFIED` Global shortcut toggles overlay, Esc hides, works over other apps, focuses input only for overlay shortcut, and does not create a taskbar window. Evidence: registration/toggle code `src-tauri/src/desktop.rs:51-60,171-212`; no Windows runtime test, E4/PROGRESS.
 - [ ] `PARTIAL` Frameless always-on-top rounded draggable resizable popover, remembered/clamped position, DPI/multi-monitor safety, keyboard/mouse interaction, and fast show/hide. Window sizing/frameless/always-on-top/resizable and position clamp exist; DPI, drag/resize behavior and runtime speed are unverified. Evidence: `tauri.conf.json:13-31`, `src-tauri/src/window.rs:1-34`, `src-tauri/src/desktop.rs:110-145`.
@@ -134,11 +134,11 @@ Evidence commands used repeatedly below:
 
 ## 11. Personal memory, PLAN 928-1050
 
-- [ ] `PENDING` Structured, semantic, and episodic memory categories covering projects, people, organizations, preferences, documents, notes, prior meetings, decisions, actions, and changes. Evidence: no memory code/tables beyond foundation migration.
-- [ ] `PENDING` Provenance-aware candidate/accepted/rejected/superseded lifecycle; no silent permanent memory conversion. Evidence: no memory lifecycle.
-- [ ] `PENDING` Provenance answers source, creation time, originating meeting/document/manual entry, and supersession. Evidence: no implementation.
-- [ ] `PENDING` Local hybrid retrieval with entity/project detection, FTS/BM25, local vectors, structured lookup, reranking, and budgeted candidates; lexical fallback when embeddings unavailable and automatic model install. Evidence: only transcript FTS foundation; no vector/reranker.
-- [ ] `PENDING` Normal-size memory management view with search, inspect/provenance, add/edit/delete, entities/projects, document import, and meeting-history deletion. Evidence: tray/settings only; no memory UI.
+- [ ] `PARTIAL` Structured, semantic, and episodic memory categories covering projects, people, organizations, preferences, documents, notes, prior meetings, decisions, actions, and changes. Evidence: schema7 manual memories represent nine structured categories with project labels and text; derived episodic memories, imported semantics and separate entity relationships remain pending.
+- [ ] `PARTIAL` Provenance-aware candidate/accepted/rejected/superseded lifecycle; no silent permanent memory conversion. Evidence: entries are explicit manual inputs and enabled only by user choice; candidate/rejected/superseded lifecycle and derived artifacts remain pending.
+- [ ] `PARTIAL` Provenance answers source, creation time, originating meeting/document/manual entry, and supersession. Evidence: manual memories persist source and creation/update timestamps; originating document/meeting relationships and supersession remain pending.
+- [ ] `PARTIAL` Local hybrid retrieval with entity/project detection, FTS/BM25, local vectors, structured lookup, reranking, and budgeted candidates; lexical fallback when embeddings unavailable and automatic model install. Evidence: manual memory FTS5/BM25, title/project weights, enabled-only top8/16KiB lexical retrieval and compiler budgeting exist; entity detection, vectors, structured lookup and reranking remain pending.
+- [ ] `PARTIAL` Normal-size memory management view with search, inspect/provenance, add/edit/delete, entities/projects, document import, and meeting-history deletion. Evidence: tray/book icon open a separate 900×700 management window with search, provenance and manual CRUD; draft-safe close destroys the WebView. Entities, document import and meeting-history deletion remain pending.
 
 ## 12. Document ingestion, PLAN 1052-1099
 
@@ -149,20 +149,20 @@ Evidence commands used repeatedly below:
 
 - [ ] `PARTIAL` Compiler accepts query, recent transcript, meeting state/retrieval, memory, documents, and session history and emits a bounded request. Evidence: context.rs compiles current request, recent transcript, bounded history and provenance records; memory/document retrieval remains pending.
 - [ ] `PARTIAL` Priority order, explicit model-aware token budgets, response reserve, and disclosure when current content cannot fit. Evidence: conservative UTF-8 byte estimates, response reserve, omission metadata and whole-current-message rejection exist. Discovered model-specific context limits remain pending.
-- [ ] `PARTIAL` Provenance labels distinguish recent meeting, personal memory, and other sources; inspectable sent-context view later stores compiled request with answer. Evidence: compiler provenance and omission metadata exist; personal memory and inspectable sent-context storage remain pending.
+- [ ] `PARTIAL` Provenance labels distinguish recent meeting, personal memory, and other sources; inspectable sent-context view later stores compiled request with answer. Evidence: compiler provenance and omission metadata exist; manual-memory provenance is integrated; inspectable sent-context storage remains pending.
 - [ ] `PARTIAL` Imported documents/transcripts are untrusted context and cannot override application/system instructions. Evidence: trusted product instructions distinguish quoted source JSON as untrusted data; document ingestion remains pending.
 
 ## 14. ChatGPT authentication and inference, PLAN 1182-1284
 
 - [ ] `PARTIAL` Official Sign in with ChatGPT open-source/local flow, eligible-plan path, dynamic registration/host ID, no embedded secret/API key requirement, no history access, streamed Responses API, and replaceable `AiProvider` boundary. Evidence: local OAuth, dynamic registration, callback validation, official endpoints, Responses/SSE parsing, and provider boundary exist in `auth.rs` and `inference.rs`; eligible-plan/live sign-in and dispatch integration are unverified.
 - [ ] `PARTIAL` Tokens only in Windows Credential Manager/DPAPI-backed Rust storage, never localStorage/React/JSON/SQLite/logs. Evidence: `src-tauri/src/credentials.rs` uses Windows DPAPI-backed per-slot files, auth grants are zeroized before vault storage, and SQLite stores public account metadata only; Windows runtime proof remains pending.
-- [ ] `PARTIAL` Streaming flow snapshots context, retrieves in parallel, compiles, dispatches, renders first/remaining deltas without waiting for nonessential enrichment. Evidence: bounded streaming Responses and provider SSE clients exist with quota/auth classification; context compiler, dispatch and UI deltas are integrated; retrieval remains pending and live acceptance is unverified.
+- [ ] `PARTIAL` Streaming flow snapshots context, retrieves in parallel, compiles, dispatches, renders first/remaining deltas without waiting for nonessential enrichment. Evidence: bounded streaming Responses and provider SSE clients exist with quota/auth classification; context compiler, dispatch and UI deltas are integrated; bounded lexical memory retrieval is integrated; parallel/hybrid retrieval remains pending and live acceptance is unverified.
 - [ ] `PARTIAL` Offline capture/transcription/persistence/local search/state continue, and inference shows a clear offline state. Evidence: local Windows capture/STT, durable meetings/transcripts, state UI, and Linux unsupported handling exist; local search and explicit inference error states exist; offline/native acceptance remains pending.
 
 ## 15. Database design, PLAN 1285-1447
 
-- [ ] `PARTIAL` Migration-managed local SQLite under per-user app data with secrets excluded, WAL/foreign keys/busy timeout. Evidence: `src-tauri/src/store.rs` implements schema 6, WAL, foreign keys, busy timeout, meetings, transcript rows, provider settings, and public account metadata; secure secrets stay outside SQLite.
-- [ ] `PARTIAL` Production entities and relationships for meetings, transcript segments with full fields, artifacts, projects, people, memories, documents/chunks, entities, embeddings, non-secret settings, migrations, plus accounts/usage/context profile tables. Evidence: meetings, transcript segments, settings, provider settings, and public account metadata are migrated; artifacts, memory, documents, embeddings, usage, and context profiles are absent.
+- [ ] `PARTIAL` Migration-managed local SQLite under per-user app data with secrets excluded, WAL/foreign keys/busy timeout. Evidence: `src-tauri/src/store.rs` implements schema 7, WAL, foreign keys, busy timeout, meetings, transcript rows, provider settings, and public account metadata; secure secrets stay outside SQLite.
+- [ ] `PARTIAL` Production entities and relationships for meetings, transcript segments with full fields, artifacts, projects, people, memories, documents/chunks, entities, embeddings, non-secret settings, migrations, plus accounts/usage/context profile tables. Evidence: meetings, transcript segments, settings, provider settings, public account metadata and manual memories are migrated; artifacts, documents, embeddings, usage events and context profiles remain pending.
 
 ## 16-18. Architecture, frontend, Tauri/Windows integration, PLAN 1448-1645
 
@@ -172,7 +172,7 @@ Evidence commands used repeatedly below:
 
 ## 19-22. Performance, errors, diagnostics, security, PLAN 1647-1814
 
-- [ ] `PARTIAL` Idle/active/overlay/retrieval budgets, bounded memory/queues, model unload-on-idle, and measured 8 GB CPU-only operation. Evidence: bounded capture/speech/transcript limits and stop-time model unload exist; retrieval budgets and 8 GB measurement are absent.
+- [ ] `PARTIAL` Idle/active/overlay/retrieval budgets, bounded memory/queues, model unload-on-idle, and measured 8 GB CPU-only operation. Evidence: bounded capture/speech/transcript limits and stop-time model unload exist; manual-memory retrieval is capped at eight rows/16KiB before compiler budgeting; 8 GB measurement remains pending.
 - [ ] `PARTIAL` Actionable errors for permissions/devices/STT/database/auth/inference/shortcuts/installer/migrations/credentials, with retries and preserved local data/unsent text. Evidence: meeting permission, capture/STT, auth, provider, streaming, migration, shortcut, and vault errors are surfaced; durable no-output retries, frozen unsent batches and partial-output recovery exist; installer/runtime coverage remains incomplete.
 - [ ] `PARTIAL` Structured bounded logging exists, but required timings/device/model/STT/retrieval/context/inference/error diagnostics and redaction coverage are not complete. Evidence: bounded logging plus capture drops/errors, speech errors, auth/inference classifications, and sensitive-header handling exist; retrieval/context and full timing diagnostics are absent.
 - [ ] `PENDING` Trust-boundary rules: validate model output, treat transcript/doc text as data, no arbitrary navigation, safe opener/CSP, secure credentials, user-profile database access, real deletion, and no telemetry without consent. Evidence: CSP exists in `tauri.conf.json:33-35`; no provider/data deletion/telemetry implementation.
@@ -184,7 +184,7 @@ Evidence commands used repeatedly below:
 - [ ] `PARTIAL` Build scripts run frontend/Rust checks and release build, but do not yet verify assets, run TypeScript tests beyond type/build, sign, or produce a tested complete installer. Evidence: root currently builds the NSIS installer and asset manifest/hash; signing, clean-install/runtime testing, and broader TypeScript tests remain absent.
 - [ ] `PENDING` Clean Windows VM/physical-laptop sequence: offline install, mic/system offline transcription, DB, online sign-in, separate roles, global shortcut, streamed contextual answer, persistence, memory retrieval, reboot/startup, uninstall/data policy. Evidence: no Windows runtime; `PROGRESS.md`.
 - [ ] `PARTIAL` Foundation checks pass: `npm run build`, native tests (3), clippy, Linux/headless UI checks, and MSVC cross-check. Evidence: current checks include 22 native tests, Clippy, Linux/headless UI checks, and MSVC cross-check; required integration/Windows suites and multi-pass verification do not exist.
-- [ ] `PENDING` Required unit/integration tests for audio/resampling/ring/VAD/transcripts/budgets/retrieval/memory/auth/injection/UI/streaming/migrations and mocked end-to-end pipelines. Evidence: only `store.rs` and `window.rs` tests, E2.
+- [ ] `PARTIAL` Required unit/integration tests for audio/resampling/ring/VAD/transcripts/budgets/retrieval/memory/auth/injection/UI/streaming/migrations and mocked end-to-end pipelines. Evidence: source tests cover stores/migrations, capture/speech, context, dispatch, auth and window helpers; IPC fixtures cover meetings, connections, history, responses and memory. Real end-to-end/native acceptance remains pending.
 - [ ] `PENDING` Windows tests for shortcut/tray/window/DPI/hotplug/Bluetooth/sleep/permissions/network/privacy/screenshot/failover. Evidence: no Windows runtime test records.
 - [ ] `PENDING` Two-hour synthetic meeting verifies bounded memory/queues/WAL, transcript/UI/STT stability, and no callback starvation. Evidence: bounded queues and stop-drain paths exist, but no two-hour run has been recorded.
 - [ ] `PENDING` Developer diagnostics screen with queue depth, drops, VAD/STT latencies, storage/retrieval/context/inference timing, RSS/model RSS. Evidence: no diagnostics UI.
@@ -195,7 +195,7 @@ Evidence commands used repeatedly below:
 - [ ] `PARTIAL` Phase B: integrated dual WASAPI, bounded buffers, resampling, VAD, recovery, diagnostics, and two-hour exit condition. Evidence: integrated dual-source WASAPI, bounded buffers, resampling, VAD, and error reporting exist; device recovery, diagnostics, two-hour run, and Windows proof remain pending.
 - [ ] `PARTIAL` Phase C: native STT abstraction/backend/model/package/partial-final/source/persistence/UI and clean-machine exit. Evidence: CPU STT, bundled model, partial/final source-tagged events, persistence, model unload, and transcript UI exist; clean-machine and Windows exit evidence are pending.
 - [ ] `PARTIAL` Phase D: meeting lifecycle/recent buffer/search/rolling state/artifacts/history. Evidence: lifecycle, consent, snapshots, durable finals, bounded transcript state, history paging, local search and saved-meeting UI exist; rolling state and artifacts remain pending.
-- [ ] `PENDING` Phase E: memories/entities/documents/FTS/embeddings/hybrid retrieval/reranking/provenance/UI. Evidence: transcript FTS exists; memory, documents, embeddings, retrieval, reranking, provenance, and UI remain absent.
+- [ ] `PARTIAL` Phase E: memories/entities/documents/FTS/embeddings/hybrid retrieval/reranking/provenance/UI. Evidence: schema7 manual memory CRUD/FTS, provenance, dedicated management UI and enabled-only lexical retrieval are implemented; entities, documents, embeddings, hybrid retrieval and reranking remain pending.
 - [ ] `PARTIAL` Phase F: ChatGPT auth/credentials/account UI/model discovery/streaming/refresh/sign-out/multiple accounts/API-key providers/fallback/usage. Evidence: auth, DPAPI vault, account metadata/UI, provider settings/key handling, model discovery, and streaming exist; serialized refresh, cancellable reauthorization, explicit account/model selection and bounded sign-out are implemented with compile/UI checks; fallback dispatch and actual returned usage are integrated; eligible live proof, usage pages and caps remain pending.
 - [ ] `PARTIAL` Phase G: query understanding/parallel retrieval/compiler/budget/fusion/injection boundaries/source chips/streaming Markdown/context profiles/screenshot image+OCR. Evidence: inference stream parsing exists; compiler budgets, untrusted-context boundaries and GFM/Shiki UI exist; query understanding, retrieval, context profiles and screenshot/OCR remain pending.
 - [ ] `PARTIAL` Phase H: profiling/keyboard/audio recovery/offline/memory deletion/diagnostics/accessibility/crash recovery/installer/signing/updater/clean-machine test. Evidence: installer build, crash/startup recovery, and local offline capture paths exist; profiling, recovery acceptance, deletion, diagnostics, signing, updater, and clean-machine tests remain pending.
@@ -225,7 +225,7 @@ Evidence commands used repeatedly below:
 
 ## 35. Final product scenario, PLAN 2492-2555
 
-- [ ] `PENDING` End-to-end proof: install only setup executable, ChatGPT authorization, mic selection, start meeting, separate system/mic transcript, shortcut, live+project-memory retrieval, compiled authorized streaming answer, hide overlay while transcription continues, completed local artifacts, restart persistence. Evidence: local source paths exist, but no complete Windows/user run has been proved. Context compiler, dispatcher and answer UI exist; memory retrieval remains pending.
+- [ ] `PENDING` End-to-end proof: install only setup executable, ChatGPT authorization, mic selection, start meeting, separate system/mic transcript, shortcut, live+project-memory retrieval, compiled authorized streaming answer, hide overlay while transcription continues, completed local artifacts, restart persistence. Evidence: local source paths exist, but no complete Windows/user run has been proved. Context compiler, dispatcher and answer UI exist; manual memory retrieval exists; full Windows acceptance remains pending.
 
 ## 36-37. References and build mandate, PLAN 2557-2623
 
@@ -269,7 +269,7 @@ Evidence commands used repeatedly below:
 
 ### 38.9 Control center, PLAN 3010-3018
 
-- [ ] `PENDING` Management pages Accounts, Providers, Usage, Context, Shortcuts, Overlay, Privacy, Audio, Memory, Meetings; correct next-meeting snapshot exception rules; press-to-record/conflict/reset shortcut UI. Evidence: current UI has only meeting settings, `src/App.tsx`.
+- [ ] `PARTIAL` Management pages Accounts, Providers, Usage, Context, Shortcuts, Overlay, Privacy, Audio, Memory, Meetings; correct next-meeting snapshot exception rules; press-to-record/conflict/reset shortcut UI. Evidence: meeting preferences, Connections, saved meetings and dedicated manual memory management exist; full ten-page control center and shortcut recorder remain pending.
 
 ### 38.10 Shipped-product examples, PLAN 3023-3035
 
@@ -283,7 +283,7 @@ The literal inventory in [PLAN_BULLETS.md](PLAN_BULLETS.md) records each bullet 
 2. **Pending dispatch acceptance.** Exercise the implemented compiler, sequential batches, cancellation, retries and fresh remote consent on Windows with real providers.
 3. **Blocker: official ChatGPT proof.** Test current sign-in/inference with an actually eligible account/client configuration. Private-plan eligibility remains unproven.
 4. **Pending provider acceptance.** Exercise consented quota-only fallback and partial recovery; implement usage pages, caps and model-specific budgets.
-5. **Blocker: memory/context.** Add document/memory schemas, local retrieval and document/memory provenance, sales notes, grounded statistical answers, and deletion controls.
+5. **Pending memory/context work.** Manual memory and bounded lexical retrieval are implemented. Add document ingestion, derived artifacts, hybrid retrieval, entity relationships, inspectable sent context and broader deletion controls.
 6. **Blocker: Windows product acceptance.** Finish overlay/privacy/control center/screenshot/OCR, clean VM/physical-laptop tests, accessibility/UI pass, integration pass, and runtime/low-RAM pass.
 
 These are pending requirements and acceptance gaps. Source implementation and synthetic UI fixtures do not prove Windows hardware behavior, eligible sign-in, memory retrieval or clean-machine acceptance.

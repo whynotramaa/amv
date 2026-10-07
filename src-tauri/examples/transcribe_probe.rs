@@ -1,11 +1,10 @@
 // Explicit developer probe; transcripts are printed only when this command is run.
 use anyhow::{bail, Context, Result};
-use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 2 {
-        bail!("usage: transcribe_probe <model-path> <16kHz-mono-PCM16-WAV>");
+        bail!("usage: transcribe_probe <model-directory> <16kHz-mono-PCM16-WAV>");
     }
     let mut reader = hound::WavReader::open(&args[1]).context("open probe WAV")?;
     let spec = reader.spec();
@@ -21,7 +20,8 @@ fn main() -> Result<()> {
         .samples::<i16>()
         .map(|s| s.map(|s| f32::from(s) / 32768.0))
         .collect::<Result<_, _>>()?;
-    let context = WhisperContext::new_with_params(&args[0], WhisperContextParameters::default())?;
+    let context = harness_lib::speech::load_recognizer(std::path::Path::new(&args[0]))
+        .map_err(anyhow::Error::msg)?;
     let started = std::time::Instant::now();
     let text = harness_lib::speech::decode(&context, &samples).map_err(anyhow::Error::msg)?;
     println!(

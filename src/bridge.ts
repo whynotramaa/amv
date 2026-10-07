@@ -126,3 +126,20 @@ export const cancelResponse = (): Promise<void> => invoke('cancel_response');
 export const openExternal = (url: string): Promise<void> => desktop ? invoke('open_external', { url }) : Promise.resolve().then(() => { window.open(url, '_blank', 'noopener,noreferrer'); });
 
 export const restoreSavedMeeting = (meetingId: number): Promise<MeetingState> => invoke('restore_saved_meeting', { meetingId });
+
+
+export type MemoryEntry = { id: number; title: string; body: string; category: string; project: string | null; enabled: boolean; createdAt: number; updatedAt: number; source: 'manual' };
+export type MemoryInput = Pick<MemoryEntry, 'title' | 'body' | 'category' | 'project' | 'enabled'>;
+export type MemoryPage = { entries: MemoryEntry[]; hasMore: boolean; next: number | null };
+export const listMemories = (beforeId: number | null = null): Promise<MemoryPage> => desktop ? invoke('list_memories', { beforeId }) : Promise.resolve({ entries: [], hasMore: false, next: null });
+export const searchMemories = (query: string): Promise<MemoryEntry[]> => desktop ? invoke('search_memories', { query }) : Promise.resolve([]);
+export const saveMemory = (id: number | null, input: MemoryInput): Promise<MemoryEntry> => invoke('save_memory', { id, input });
+export const deleteMemory = (id: number): Promise<void> => invoke('delete_memory', { id });
+export async function openMemory(): Promise<void> {
+  if (desktop) await invoke('open_memory');
+  else window.open('?view=memory', 'harness-memory');
+}
+
+export const closeMemory = (): Promise<void> => invoke('close_memory');
+export const startChat = (): Promise<MeetingState> => invoke('start_chat');
+export const startDragging = (): Promise<void> => desktop ? getCurrentWindow().startDragging() : Promise.resolve();
