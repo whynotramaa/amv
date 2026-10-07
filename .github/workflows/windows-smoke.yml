@@ -36,16 +36,65 @@ jobs:
           if (-not $exe) { throw 'harness.exe not installed' }
           Write-Host "Installed at $($exe.FullName)"
           Get-ChildItem $exe.DirectoryName -Recurse | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
           $app = Start-Process $exe.FullName -PassThru
-          foreach ($i in 1..4) { Start-Sleep 5; Shot "launch-$($i * 5)s" }
+          foreach ($i in 1..3) { Start-Sleep 5; Shot "desktop-$($i * 5)s" }
+          Add-Type @'
+          using System; using System.Runtime.InteropServices; using System.Text;
+          public static class W {
+            public delegate bool P(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(P p, IntPtr l);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+            [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr h, out uint a);
+            public struct RECT { public int L, T, R, B; }
+          }
+          '@
+          [W]::EnumWindows({ param($h, $l)
+            $procId = 0; [void][W]::GetWindowThreadProcessId($h, [ref]$procId)
+            if ($procId -eq $app.Id) {
+              $t = New-Object System.Text.StringBuilder 256; [void][W]::GetWindowText($h, $t, 256)
+              $r = New-Object W+RECT; [void][W]::GetWindowRect($h, [ref]$r)
+              $a = 0; [void][W]::GetWindowDisplayAffinity($h, [ref]$a)
+              Write-Host "Window '$t' visible=$([W]::IsWindowVisible($h)) rect=$($r.L),$($r.T),$($r.R),$($r.B) affinity=$a"
+            }
+            $true }, [IntPtr]::Zero) | Out-Null
+          try {
+            $targets = Invoke-RestMethod http://127.0.0.1:9222/json
+            $targets | Format-Table type, url, title -AutoSize | Out-String -Width 300 | Write-Host
+            foreach ($t in $targets | Where-Object type -eq 'page') {
+              $ws = New-Object System.Net.WebSockets.ClientWebSocket
+              $ws.ConnectAsync([Uri]$t.webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait()
+              function Cdp($id, $method, $params) {
+                $msg = @{ id = $id; method = $method; params = $params } | ConvertTo-Json -Compress -Depth 5
+                $ws.SendAsync([ArraySegment[byte]][Text.Encoding]::UTF8.GetBytes($msg), 'Text', $true, [Threading.CancellationToken]::None).Wait()
+                $ms = New-Object IO.MemoryStream
+                do {
+                  $buf = New-Object byte[] 1048576
+                  $res = $ws.ReceiveAsync([ArraySegment[byte]]$buf, [Threading.CancellationToken]::None).Result
+                  $ms.Write($buf, 0, $res.Count)
+                  if ($res.EndOfMessage) {
+                    $reply = [Text.Encoding]::UTF8.GetString($ms.ToArray()) | ConvertFrom-Json
+                    if ($reply.id -eq $id) { return $reply.result }
+                    $ms = New-Object IO.MemoryStream
+                  }
+                } while ($true)
+              }
+              $label = ($t.url -replace '[^a-z0-9]+', '-').Trim('-')
+              $shot = Cdp 1 'Page.captureScreenshot' @{ format = 'png' }
+              [IO.File]::WriteAllBytes("shots/webview-$label.png", [Convert]::FromBase64String($shot.data))
+              $text = Cdp 2 'Runtime.evaluate' @{ expression = 'document.body.innerText.slice(0, 2000)'; returnByValue = $true }
+              Write-Host "== $($t.url) text:"; Write-Host $text.result.value
+            }
+          } catch { Write-Host "CDP failed: $_" }
           $app.Refresh()
           Write-Host "Exited: $($app.HasExited) Code: $(if ($app.HasExited) { '0x{0:X8}' -f $app.ExitCode })"
           Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
             Where-Object { $_.ProviderName -in 'Application Error','Windows Error Reporting','.NET Runtime','SideBySide' } |
             Format-List TimeCreated, ProviderName, Message | Out-String -Width 300 | Write-Host
-          $logs = Get-ChildItem "$env:LOCALAPPDATA\local.harness.desktop" -Recurse -ErrorAction SilentlyContinue
-          $logs | Select-Object FullName | Out-String -Width 300 | Write-Host
-          $logs | Where-Object Extension -eq '.log' | ForEach-Object { Write-Host "== $($_.FullName)"; Get-Content $_.FullName | Write-Host }
+          Get-Content "$env:LOCALAPPDATA\local.harness.desktop\logs\Harness.log" -ErrorAction SilentlyContinue | Write-Host
           if ($app.HasExited) { throw 'Harness exited after launch' }
       - uses: actions/upload-artifact@v4
         if: always()

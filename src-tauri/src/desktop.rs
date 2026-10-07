@@ -2755,7 +2755,8 @@ pub fn run() {
                                     match dispatch_response(app, id, None, false, false, None) {
                                         Ok(Some(_)) => {}
                                         Ok(None) => {
-                                            let _ = app.emit("app-notice", "No new speech to send.");
+                                            let _ =
+                                                app.emit("app-notice", "No new speech to send.");
                                         }
                                         Err(error) => {
                                             let _ = app.emit("app-notice", error);

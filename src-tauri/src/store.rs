@@ -952,7 +952,11 @@ impl Store {
 
     pub fn latest_finalized_id(&self, meeting_id: i64) -> Result<Option<i64>> {
         validate_id(meeting_id, "meeting")?;
-        Ok(self.conn.query_row("SELECT MAX(id) FROM transcript_segments WHERE meeting_id = ?1 AND is_final = 1", [meeting_id], |row| row.get(0))?)
+        Ok(self.conn.query_row(
+            "SELECT MAX(id) FROM transcript_segments WHERE meeting_id = ?1 AND is_final = 1",
+            [meeting_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn prepare_transcript_request(
