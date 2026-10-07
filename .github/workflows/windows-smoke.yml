@@ -1,0 +1,54 @@
+name: Windows smoke
+on:
+  push:
+    branches: [windows-smoke]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Download latest installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $id = gh run list -R $env:GITHUB_REPOSITORY -w "Windows build" -s success -L 1 --json databaseId -q '.[0].databaseId'
+          Write-Host "Using run $id"
+          gh run download $id -R $env:GITHUB_REPOSITORY -n Harness-Setup-x64 -D installer
+      - name: Install, launch and capture
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          New-Item -ItemType Directory -Force shots | Out-Null
+          function Shot($name) {
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+            $bmp.Save("shots/$name.png")
+          }
+          $p = Start-Process installer/Harness-Setup-x64.exe -ArgumentList '/S' -PassThru -Wait
+          Write-Host "Installer exit $($p.ExitCode)"
+          $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter harness.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'harness.exe not installed' }
+          Write-Host "Installed at $($exe.FullName)"
+          Get-ChildItem $exe.DirectoryName -Recurse | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+          $app = Start-Process $exe.FullName -PassThru
+          foreach ($i in 1..4) { Start-Sleep 5; Shot "launch-$($i * 5)s" }
+          $app.Refresh()
+          Write-Host "Exited: $($app.HasExited) Code: $(if ($app.HasExited) { '0x{0:X8}' -f $app.ExitCode })"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -in 'Application Error','Windows Error Reporting','.NET Runtime','SideBySide' } |
+            Format-List TimeCreated, ProviderName, Message | Out-String -Width 300 | Write-Host
+          $logs = Get-ChildItem "$env:LOCALAPPDATA\local.harness.desktop" -Recurse -ErrorAction SilentlyContinue
+          $logs | Select-Object FullName | Out-String -Width 300 | Write-Host
+          $logs | Where-Object Extension -eq '.log' | ForEach-Object { Write-Host "== $($_.FullName)"; Get-Content $_.FullName | Write-Host }
+          if ($app.HasExited) { throw 'Harness exited after launch' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-screenshots
+          path: shots/
