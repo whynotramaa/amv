@@ -225,6 +225,7 @@ fn request_compile(
     pending: &PendingRequest,
     include_microphone: bool,
 ) -> Result<(CompileInput, bool), String> {
+    let include_microphone = include_microphone && pending.kind == RequestKind::Question;
     let meeting = store
         .meeting(pending.meeting_id)
         .map_err(|e| format!("Couldn't read meeting settings: {e}"))?;
@@ -309,11 +310,36 @@ fn request_compile(
     }
     let omitted = history.omitted_requests > 0 || transcript_omitted;
     let settings = meeting.settings_snapshot;
-    Ok((CompileInput { model: String::new(), user_message: pending.user_text.clone(), custom_instruction: Some(match settings.response_mode.as_str() {
+    let history = history
+        .entries
+        .into_iter()
+        .map(|e| {
+            let image_url = if e.role == "user" {
+                store
+                    .request_image(e.request_id)
+                    .map_err(|_| "Couldn't read saved image")?
+            } else {
+                None
+            };
+            Ok(HistoryMessage {
+                role: e.role,
+                content: e.text,
+                image_url,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let image_url = if pending.id > 0 {
+        store
+            .request_image(pending.id)
+            .map_err(|_| "Couldn't read pending image")?
+    } else {
+        None
+    };
+    Ok((CompileInput { model: String::new(), user_message: pending.user_text.clone(), image_url, custom_instruction: Some(match settings.response_mode.as_str() {
         "summary" => "Summarize the new speech clearly. Separate decisions, open questions, and follow-ups when present.".into(),
         "custom" => settings.custom_instruction,
-        _ => "Suggest concise, useful answers for this sales conversation. Ground numerical claims in supplied evidence and identify missing facts.".into(),
-    }), recent_transcript, history: history.entries.into_iter().map(|e| HistoryMessage { role: e.role, content: e.text }).collect(), evidence, microphone, include_microphone }, omitted))
+        _ => "Answer the software interview question in the submitted message directly and concisely. For coding questions, explain the approach, give working code in the requested language, and state time and space complexity and edge cases. For system design, discuss requirements, architecture, trade-offs, scalability, and failure modes. For behavioral questions, use supplied experience and never invent personal accomplishments.".into(),
+    }), recent_transcript, history, evidence, microphone, include_microphone }, omitted))
 }
 
 type SelectedAccount = (String, String);
@@ -394,12 +420,11 @@ fn speech_batch_bytes(settings: &Settings) -> usize {
     } else {
         0
     };
-    // Source JSON expands controls up to sixfold. Reserve room for instructions, model, IDs and framing.
+    // Speech is a regular user message. Reserve room for instructions, model and framing.
     (RESPONSE_CONTEXT_BUDGET
         .input_tokens()
-        .saturating_sub(custom_bytes + 4096)
-        / 6)
-    .clamp(128, 4096)
+        .saturating_sub(custom_bytes + 4096))
+    .clamp(128, 8192)
 }
 
 #[tauri::command]
@@ -430,11 +455,15 @@ fn restore_saved_meeting(
         .store
         .recent_transcript(meeting_id, 0, true)
         .map_err(|_| "Couldn't read saved transcript")?;
+    let cutoff = core
+        .store
+        .latest_finalized_id(meeting_id)
+        .map_err(|_| "Couldn't read finalized speech")?;
     let result = core
         .meeting
         .lock()
         .map_err(|_| "Meeting state is unavailable")?
-        .restore(&app, meeting, saved_rows(rows))?;
+        .restore(&app, meeting, saved_rows(rows), cutoff)?;
     response.generation = response.generation.wrapping_add(1);
     response.state = None;
     response.auto_meeting = None;
@@ -461,7 +490,7 @@ fn ask_meeting(
     dispatch_response(
         &app,
         meeting_id,
-        Some(text),
+        Some((text, None)),
         include_microphone,
         false,
         None,
@@ -474,6 +503,83 @@ fn send_meeting_speech(
     meeting_id: i64,
 ) -> Result<Option<DispatchState>, String> {
     dispatch_response(&app, meeting_id, None, false, false, None)
+}
+
+fn send_visual(app: &tauri::AppHandle, clipboard: bool) -> Result<(), String> {
+    let (current, work) = {
+        let state = app.state::<Mutex<Core>>();
+        let core = state.lock().map_err(|_| "Chat is unavailable")?;
+        if !inference_available(&core) {
+            return Err("Connect a provider and select a model before sending.".into());
+        }
+        let response = core
+            .response
+            .lock()
+            .map_err(|_| "Response state is unavailable")?;
+        if response.running || response.shutting_down {
+            return Err(
+                "Wait for the current response before sending an image or screenshot.".into(),
+            );
+        }
+        let id = core
+            .meeting
+            .lock()
+            .map_err(|_| "Chat is unavailable")?
+            .state()?
+            .meeting_id;
+        if let Some(id) = id {
+            if core
+                .store
+                .meeting_pending_request(id)
+                .map_err(|_| "Couldn't read pending request")?
+                .is_some()
+            {
+                return Err(
+                    "Retry or finish the pending response before sending a screenshot or image."
+                        .into(),
+                );
+            }
+        }
+        (id, track_work(&core))
+    };
+    let _work = work;
+    let id = match current {
+        Some(id) => id,
+        None => start_chat(app.clone())?
+            .meeting_id
+            .ok_or("Couldn't start chat")?,
+    };
+    let generation = {
+        let state = app.state::<Mutex<Core>>();
+        let core = state.lock().map_err(|_| "Chat is unavailable")?;
+        let response = core
+            .response
+            .lock()
+            .map_err(|_| "Response state is unavailable")?;
+        response.generation
+    };
+    // Capture before revealing/focusing the assistant, so it cannot obscure the question.
+    let (text, image) = if clipboard {
+        ("Answer the software interview question in this image. If it contains code, explain or solve the problem; ask for clarification if the question is unclear.".into(), Some(crate::visual::clipboard_image()?))
+    } else {
+        (crate::visual::screenshot_text()?, None)
+    };
+    {
+        let state = app.state::<Mutex<Core>>();
+        let core = state.lock().map_err(|_| "Chat is unavailable")?;
+        let response = core
+            .response
+            .lock()
+            .map_err(|_| "Response state is unavailable")?;
+        if response.generation != generation {
+            return Err(
+                "The chat or response changed during capture. Press the shortcut again.".into(),
+            );
+        }
+    }
+    dispatch_response(app, id, Some((text, image)), false, false, None)?;
+    report_window_error(show_overlay(app));
+    Ok(())
 }
 
 #[tauri::command]
@@ -514,7 +620,7 @@ fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|_| "Couldn't open your browser".into())
 }
 
-// Called only after a finalized SYSTEM row has been committed. No polling or audio upload.
+// Called after each finalized speech row has been committed. No polling or audio upload.
 pub(crate) fn speech_finalized(app: &tauri::AppHandle, meeting_id: i64) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -550,7 +656,7 @@ pub(crate) fn speech_finalized(app: &tauri::AppHandle, meeting_id: i64) {
 fn dispatch_response(
     app: &tauri::AppHandle,
     meeting_id: i64,
-    question: Option<String>,
+    question: Option<(String, Option<String>)>,
     include_microphone: bool,
     automatic: bool,
     through_id: Option<i64>,
@@ -636,7 +742,7 @@ fn dispatch_response(
             }
             pending
         }
-        (None, Some(text)) => {
+        (None, Some((text, image_url))) => {
             // Reject an oversized question before reserving a durable retry that can never fit.
             let draft = PendingRequest {
                 id: 0,
@@ -649,6 +755,7 @@ fn dispatch_response(
                 segment_ids: Vec::new(),
             };
             let (mut input, omitted) = request_compile(&core.store, &draft, include_microphone)?;
+            input.image_url = image_url.clone();
             input.model = account
                 .as_ref()
                 .map(|(_, model)| model.clone())
@@ -662,7 +769,7 @@ fn dispatch_response(
             crate::context::compile(input.clone(), RESPONSE_CONTEXT_BUDGET).map_err(|_| "This question exceeds the current context budget. Shorten the question or your custom instruction.")?;
             question_context = Some((input, omitted));
             core.store
-                .prepare_question_request(meeting_id, &text)
+                .prepare_image_question(meeting_id, &text, image_url.as_deref())
                 .map_err(|e| format!("Couldn't save question: {e}"))?
         }
         (None, None) => match core
@@ -701,6 +808,10 @@ fn dispatch_response(
         error: None,
         usage: None,
         user_text: Some(pending.user_text.clone()),
+        speech_through: core
+            .store
+            .request_speech_through(pending.id)
+            .map_err(|_| "Couldn't read speech progress")?,
     };
     let (cancel, receiver) = oneshot::channel();
     response.generation = response.generation.wrapping_add(1);
@@ -2481,17 +2592,26 @@ fn get_app_state(state: tauri::State<'_, Mutex<Core>>) -> Result<AppState, Strin
     })
 }
 
-fn shortcuts(settings: &Settings) -> Result<[Shortcut; 3], String> {
+fn shortcuts(settings: &Settings) -> Result<[Shortcut; 5], String> {
     let overlay = Shortcut::from_str(settings.overlay_shortcut.trim())
         .map_err(|_| "The assistant shortcut is invalid. Try Ctrl+Space.".to_string())?;
     let send = Shortcut::from_str(settings.send_shortcut.trim())
         .map_err(|_| "The send shortcut is invalid. Try Ctrl+Shift+Enter.".to_string())?;
     let new_chat = Shortcut::from_str(settings.new_chat_shortcut.trim())
         .map_err(|_| "The new chat shortcut is invalid. Try Ctrl+Alt+N.".to_string())?;
-    if overlay == send || overlay == new_chat || send == new_chat {
+    let screenshot = Shortcut::from_str(settings.screenshot_shortcut.trim())
+        .map_err(|_| "The screenshot shortcut is invalid. Try Ctrl+Shift+O.".to_string())?;
+    let image = Shortcut::from_str(settings.image_shortcut.trim())
+        .map_err(|_| "The clipboard image shortcut is invalid. Try Ctrl+Shift+X.".to_string())?;
+    let keys = [overlay, send, new_chat, screenshot, image];
+    if keys
+        .iter()
+        .enumerate()
+        .any(|(i, key)| keys[..i].contains(key))
+    {
         return Err("Choose a different shortcut for each action.".into());
     }
-    Ok([overlay, send, new_chat])
+    Ok(keys)
 }
 
 fn register_shortcuts(app: &tauri::AppHandle, settings: &Settings) -> Result<(), String> {
@@ -2697,7 +2817,30 @@ fn report_window_error(result: tauri::Result<()>) {
     }
 }
 
+static HOTKEY_PREPARATION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+fn show_fatal(message: &str) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::core::HSTRING;
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        MessageBoxW(
+            None,
+            &HSTRING::from(message),
+            &HSTRING::from("Harness"),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = message;
+}
+
 pub fn run() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        show_fatal(&format!("Harness crashed: {info}"));
+    }));
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -2731,9 +2874,14 @@ pub fn run() {
                     }
                     let settings = app
                         .state::<Mutex<Core>>()
-                        .lock()
+                        .try_lock()
                         .ok()
                         .map(|core| core.settings.clone());
+                    if settings.is_none() {
+                        let _ =
+                            app.emit("app-notice", "Harness is busy. Press the shortcut again.");
+                        return;
+                    }
                     if let Some(settings) = settings {
                         if let Ok(pair) = shortcuts(&settings) {
                             if shortcut == &pair[2] {
@@ -2746,26 +2894,80 @@ pub fn run() {
                                 });
                             } else if shortcut == &pair[0] {
                                 report_window_error(toggle_overlay(app));
+                            } else if shortcut == &pair[3] || shortcut == &pair[4] {
+                                let permit = match HOTKEY_PREPARATION.try_acquire() {
+                                    Ok(permit) => permit,
+                                    Err(_) => {
+                                        let _ = app.emit(
+                                            "app-notice",
+                                            "A shortcut is being prepared. Wait a moment.",
+                                        );
+                                        return;
+                                    }
+                                };
+                                let clipboard = shortcut == &pair[4];
+                                let app = app.clone();
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    let _permit = permit;
+                                    if let Err(error) = send_visual(&app, clipboard) {
+                                        let _ = app.emit("app-notice", error);
+                                    }
+                                });
                             } else if shortcut == &pair[1] {
                                 report_window_error(show_overlay(app));
-                                let id = app.state::<Mutex<Core>>().lock().ok().and_then(|core| {
-                                    core.meeting.lock().ok()?.state().ok()?.meeting_id
-                                });
-                                if let Some(id) = id {
-                                    match dispatch_response(app, id, None, false, false, None) {
-                                        Ok(Some(_)) => {}
-                                        Ok(None) => {
-                                            let _ = app.emit("app-notice", "No new speech to send.");
-                                        }
-                                        Err(error) => {
-                                            let _ = app.emit("app-notice", error);
-                                        }
+                                let permit = match HOTKEY_PREPARATION.try_acquire() {
+                                    Ok(permit) => permit,
+                                    Err(_) => {
+                                        let _ = app.emit(
+                                            "app-notice",
+                                            "Speech sending is being prepared. Wait a moment.",
+                                        );
+                                        return;
                                     }
-                                } else {
-                                    let _ = app.emit(
-                                        "app-notice",
-                                        "Start a meeting before sending speech.",
-                                    );
+                                };
+                                let captured = (|| -> Result<_, String> {
+                                    let state = app.state::<Mutex<Core>>();
+                                    let core = state.try_lock().map_err(|_| {
+                                        "Harness is busy. Press the shortcut again."
+                                    })?;
+                                    let meeting = core.meeting.try_lock().map_err(|_| {
+                                        "Meeting state is busy. Press the shortcut again."
+                                    })?;
+                                    let (id, cutoff) = meeting.speech_cutoff()?;
+                                    let id = id.ok_or("Start a meeting before sending speech.")?;
+                                    let cutoff = cutoff.ok_or("No new speech to send.")?;
+                                    Ok((id, cutoff, track_work(&core)))
+                                })();
+                                match captured {
+                                    Ok((id, cutoff, work)) => {
+                                        let app = app.clone();
+                                        tauri::async_runtime::spawn_blocking(move || {
+                                            let _work = work;
+                                            let _permit = permit;
+                                            match dispatch_response(
+                                                &app,
+                                                id,
+                                                None,
+                                                false,
+                                                false,
+                                                Some(cutoff),
+                                            ) {
+                                                Ok(Some(_)) => {}
+                                                Ok(None) => {
+                                                    let _ = app.emit(
+                                                        "app-notice",
+                                                        "No new speech to send.",
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    let _ = app.emit("app-notice", error);
+                                                }
+                                            }
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = app.emit("app-notice", error);
+                                    }
                                 }
                             }
                         }
@@ -3037,6 +3239,7 @@ pub fn run() {
     if let Err(error) = builder.run(tauri::generate_context!()) {
         log::error!("component=app action=start_failed error={error}");
         eprintln!("Harness couldn't start: {error}");
+        show_fatal(&format!("Harness couldn't start: {error}"));
         std::process::exit(1);
     }
 }
@@ -3044,6 +3247,201 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visual_shortcuts_migrate_customize_and_reject_collisions() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("screenshotShortcut");
+        old.as_object_mut().unwrap().remove("imageShortcut");
+        let mut settings: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(settings.screenshot_shortcut, "Ctrl+Shift+O");
+        assert_eq!(settings.image_shortcut, "Ctrl+Shift+X");
+        assert!(shortcuts(&settings).is_ok());
+        settings.image_shortcut = "Control+Shift+O".into();
+        assert!(shortcuts(&settings).is_err());
+        settings.image_shortcut = "Ctrl+Alt+I".into();
+        settings.screenshot_shortcut = "Ctrl+Alt+O".into();
+        assert!(shortcuts(&settings).is_ok());
+        settings.screenshot_shortcut.clear();
+        assert!(settings.validate().is_err());
+        assert!(shortcuts(&settings).is_err());
+    }
+
+    #[test]
+    fn ocr_and_image_messages_keep_the_chat_speech_buffer_and_image_followups() -> anyhow::Result<()>
+    {
+        let mut store = Store::open(":memory:")?;
+        let meeting = store.create_meeting("software interview", 0, &Settings::default())?;
+        let speech = store.insert_finalized_transcript(
+            meeting.id,
+            1,
+            crate::store::TranscriptSource::Microphone,
+            0,
+            None,
+            1,
+            "pending speech",
+        )?;
+        let ocr = store.prepare_question_request(meeting.id, "Explain this code\nreturn count;")?;
+        let (mut input, _) = request_compile(&store, &ocr, false).map_err(anyhow::Error::msg)?;
+        input.model = "selected-model".into();
+        let compiled = crate::context::compile(input, RESPONSE_CONTEXT_BUDGET).unwrap();
+        assert_eq!(
+            compiled.request.messages.last().unwrap().content,
+            ocr.user_text
+        );
+        assert_eq!(store.request_speech_through(ocr.id)?, None);
+        store.begin_request(ocr.id)?;
+        store.complete_request(ocr.id, "OCR answer", "chatgpt", "selected-model", None)?;
+        let image = crate::visual::tests::image();
+        let pending = store.prepare_image_question(meeting.id, "Solve the image", Some(&image))?;
+        let (mut input, _) =
+            request_compile(&store, &pending, false).map_err(anyhow::Error::msg)?;
+        input.model = "selected-model".into();
+        let compiled = crate::context::compile(input, RESPONSE_CONTEXT_BUDGET).unwrap();
+        assert_eq!(
+            compiled
+                .request
+                .messages
+                .last()
+                .unwrap()
+                .image_url
+                .as_deref(),
+            Some(image.as_str())
+        );
+        assert!(compiled
+            .request
+            .messages
+            .iter()
+            .any(|m| m.content == "OCR answer"));
+        store.begin_request(pending.id)?;
+        store.complete_request(
+            pending.id,
+            "image answer",
+            "chatgpt",
+            "selected-model",
+            None,
+        )?;
+        let next = store.prepare_question_request(meeting.id, "Explain the second line")?;
+        let (mut input, _) = request_compile(&store, &next, false).map_err(anyhow::Error::msg)?;
+        input.model = "selected-model".into();
+        let compiled = crate::context::compile(input, RESPONSE_CONTEXT_BUDGET).unwrap();
+        assert!(compiled
+            .request
+            .messages
+            .iter()
+            .any(|m| m.image_url.as_deref() == Some(image.as_str())));
+        assert_eq!(compiled.request.messages.last().unwrap().image_url, None);
+        store.begin_request(next.id)?;
+        store.complete_request(
+            next.id,
+            "followup answer",
+            "chatgpt",
+            "selected-model",
+            None,
+        )?;
+        let voice = store
+            .prepare_transcript_through(meeting.id, 100, 8192, Some(speech.id))?
+            .unwrap();
+        assert_eq!(voice.user_text, "pending speech");
+        assert_eq!(voice.meeting_id, meeting.id);
+        Ok(())
+    }
+
+    #[test]
+    fn microphone_sends_are_new_messages_in_the_same_software_interview() -> anyhow::Result<()> {
+        let mut store = Store::open(":memory:")?;
+        let settings = Settings::default();
+        let meeting = store.create_meeting("software interview", 0, &settings)?;
+        let first = store.insert_finalized_transcript(
+            meeting.id,
+            1,
+            crate::store::TranscriptSource::Microphone,
+            0,
+            None,
+            1,
+            "How does a hash map work?",
+        )?;
+        let cutoff = store.latest_finalized_id(meeting.id)?;
+        let pending = store
+            .prepare_transcript_through(meeting.id, 100, speech_batch_bytes(&settings), cutoff)?
+            .unwrap();
+        assert_eq!(pending.segment_ids, vec![first.id]);
+        let (mut input, _) =
+            request_compile(&store, &pending, false).map_err(anyhow::Error::msg)?;
+        input.model = "test-model".into();
+        let compiled = crate::context::compile(input, RESPONSE_CONTEXT_BUDGET).unwrap();
+        let message = compiled.request.messages.last().unwrap();
+        assert_eq!(message.role, "user");
+        assert_eq!(message.content, pending.user_text);
+        assert!(compiled
+            .request
+            .instructions
+            .as_deref()
+            .unwrap()
+            .contains("software engineering interviews"));
+        assert!(compiled
+            .request
+            .instructions
+            .as_deref()
+            .unwrap()
+            .contains("time and space complexity"));
+        store.begin_request(pending.id)?;
+        // Listening continues while the answer is being generated.
+        let second = store.insert_finalized_transcript(
+            meeting.id,
+            2,
+            crate::store::TranscriptSource::Microphone,
+            1,
+            None,
+            1,
+            "What about collisions?",
+        )?;
+        assert_eq!(store.request_speech_through(pending.id)?, Some(first.id));
+        store.complete_request(
+            pending.id,
+            "Hash maps map keys to buckets.",
+            "chatgpt",
+            "test-model",
+            None,
+        )?;
+        assert!(store
+            .prepare_transcript_through(meeting.id, 100, speech_batch_bytes(&settings), cutoff)?
+            .is_none());
+        let next = store
+            .prepare_transcript_request(meeting.id, 100, speech_batch_bytes(&settings))?
+            .unwrap();
+        assert_eq!(next.meeting_id, meeting.id);
+        assert_eq!(next.segment_ids, vec![second.id]);
+        let (mut input, _) = request_compile(&store, &next, false).map_err(anyhow::Error::msg)?;
+        input.model = "test-model".into();
+        let compiled = crate::context::compile(input, RESPONSE_CONTEXT_BUDGET).unwrap();
+        assert!(compiled
+            .request
+            .messages
+            .iter()
+            .any(|m| m.role == "user" && m.content == pending.user_text));
+        assert!(compiled
+            .request
+            .messages
+            .iter()
+            .any(|m| m.role == "assistant" && m.content == "Hash maps map keys to buckets."));
+        assert_eq!(
+            compiled.request.messages.last().unwrap().content,
+            "What about collisions?"
+        );
+        store.begin_request(next.id)?;
+        store.complete_request(
+            next.id,
+            "Resolve collisions with chaining or probing.",
+            "chatgpt",
+            "test-model",
+            None,
+        )?;
+        assert!(store
+            .prepare_transcript_request(meeting.id, 100, speech_batch_bytes(&settings))?
+            .is_none());
+        Ok(())
+    }
 
     #[test]
     fn control_heavy_speech_slices_fit_with_the_largest_unicode_instruction() -> anyhow::Result<()>
@@ -3070,7 +3468,7 @@ mod tests {
         let (mut input, _) =
             request_compile(&store, &request, false).map_err(anyhow::Error::msg)?;
         input.model = "test-model".into();
-        input.user_message = serde_json::json!({ "source": "system", "segment_ids": request.segment_ids, "text": request.user_text }).to_string();
+        input.user_message = request.user_text;
         assert!(crate::context::compile(input, RESPONSE_CONTEXT_BUDGET).is_ok());
         Ok(())
     }
@@ -3128,6 +3526,15 @@ mod tests {
         assert_eq!(input.recent_transcript[0].text, "recent system");
         assert!(!input.include_microphone);
         assert!(input.microphone.is_empty());
+        let (opted_in, _) = request_compile(&store, &pending, true).map_err(anyhow::Error::msg)?;
+        assert!(opted_in.include_microphone);
+        assert_eq!(opted_in.microphone[0].text, "private mic");
+        let mut transcript = pending.clone();
+        transcript.kind = RequestKind::Transcript;
+        let (system_only, _) =
+            request_compile(&store, &transcript, true).map_err(anyhow::Error::msg)?;
+        assert!(!system_only.include_microphone);
+        assert!(system_only.microphone.is_empty());
         input.model = "test-model".into();
         let compiled = crate::context::compile(input, RESPONSE_CONTEXT_BUDGET).unwrap();
         assert!(compiled
@@ -3270,6 +3677,58 @@ mod tests {
             .evidence
             .is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn docx_managed_copy_retrieval_and_failed_reindex() -> anyhow::Result<()> {
+        use std::io::Write;
+        let dir =
+            std::env::temp_dir().join(format!("harness-docx-integration-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir)?;
+        let result = (|| -> anyhow::Result<()> {
+            let original = dir.join("revenue.docx");
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&original)?);
+            zip.start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )?;
+            zip.write_all(br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Acme revenue grew 12%.</w:t></w:r></w:p></w:body></w:document>"#)?;
+            zip.finish()?;
+            let db = dir.join("harness.db");
+            let mut store = Store::open(&db)?;
+            let copies = document_copy_root(&db)?;
+            let saved = index_local_document(&store, &copies, &original, true, None, false)?;
+            let copy = store.document_source(saved.id)?.stored_path.unwrap();
+            assert!(copy.ends_with(".docx"));
+            assert_eq!(std::fs::read(&copy)?, std::fs::read(&original)?);
+            let meeting = store.create_meeting("Acme", 1000, &Settings::default())?;
+            let request = store.prepare_question_request(meeting.id, "What is Acme revenue?")?;
+            assert!(request_compile(&store, &request, false)
+                .map_err(anyhow::Error::msg)?
+                .0
+                .evidence
+                .is_empty());
+            store.set_document_enabled(saved.id, true)?;
+            let evidence = request_compile(&store, &request, false)
+                .map_err(anyhow::Error::msg)?
+                .0
+                .evidence;
+            assert_eq!(evidence.len(), 1);
+            assert!(evidence[0].content.contains("Acme revenue grew 12%."));
+            assert!(!evidence[0].provenance.contains(dir.to_str().unwrap()));
+            std::fs::write(&original, b"corrupt replacement")?;
+            assert!(index_local_document(&store, &copies, &original, true, None, true).is_err());
+            assert_eq!(store.document(saved.id)?.content_hash, saved.content_hash);
+            assert!(std::path::Path::new(&copy).is_file());
+            store.delete_document(saved.id)?;
+            cleanup_document_copies(&store, &copies)?;
+            assert!(!std::path::Path::new(&copy).exists());
+            assert!(original.is_file());
+            Ok(())
+        })();
+        let _ = std::fs::remove_dir_all(dir);
+        result
     }
 
     #[test]

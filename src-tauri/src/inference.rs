@@ -22,6 +22,8 @@ pub enum WireApi {
 pub struct TextMessage {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -339,7 +341,12 @@ fn responses_body(request: &StreamRequest) -> Value {
             } else {
                 "input_text"
             };
-            input.push(json!({ "type": "message", "role": message.role, "content": [{ "type": kind, "text": message.content }] }));
+            let mut content = vec![json!({ "type": kind, "text": message.content })];
+            if let Some(image) = &message.image_url {
+                content
+                    .push(json!({ "type": "input_image", "image_url": image, "detail": "auto" }));
+            }
+            input.push(json!({ "type": "message", "role": message.role, "content": content }));
         }
     }
     json!({
@@ -362,7 +369,13 @@ fn compat_body(request: &StreamRequest) -> Value {
             // Compatibility providers may only support system/user/assistant.
             // Quoted context stays below the trusted product instruction.
             "role": if message.role == "developer" { "user" } else { &message.role },
-            "content": message.content,
+            "content": match &message.image_url {
+                Some(image) => json!([
+                    { "type": "text", "text": message.content },
+                    { "type": "image_url", "image_url": { "url": image, "detail": "auto" } }
+                ]),
+                None => json!(message.content),
+            },
         })
     }));
     json!({
@@ -582,6 +595,12 @@ fn validate_request(request: &StreamRequest) -> Result<(), StreamFailure> {
         {
             return Err(local_failure(FailureKind::InvalidRequest));
         }
+        if let Some(image) = &message.image_url {
+            if message.role != "user" || crate::visual::validate_image_url(image).is_err() {
+                return Err(local_failure(FailureKind::InvalidRequest));
+            }
+            bytes += image.len();
+        }
         bytes += message.content.len();
     }
     if bytes > MAX_INPUT {
@@ -744,6 +763,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn images_are_user_content_on_both_wires_and_text_requests_stay_text() {
+        let image = crate::visual::tests::image();
+        let mut request = StreamRequest {
+            model: "account-selected-model".into(),
+            instructions: Some("software interview".into()),
+            messages: vec![TextMessage {
+                role: "user".into(),
+                content: "Solve this".into(),
+                image_url: Some(image.clone()),
+            }],
+        };
+        assert!(validate_request(&request).is_ok());
+        let body = responses_body(&request);
+        assert_eq!(
+            body["input"][0]["content"][1],
+            json!({"type":"input_image", "image_url":image, "detail":"auto"})
+        );
+        assert_eq!(body["input"][0]["content"][0]["text"], "Solve this");
+        assert_eq!(body["store"], false);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body.as_object().unwrap().len(), 5);
+        assert!(serialize_body(&body).is_ok());
+        assert_eq!(
+            compat_body(&request)["messages"][1]["content"][1]["image_url"]["url"],
+            image
+        );
+        for role in ["assistant", "system", "developer"] {
+            request.messages[0].role = role.into();
+            assert!(validate_request(&request).is_err());
+        }
+        request.messages[0].role = "user".into();
+        request.messages[0].image_url = Some("https://example.org/image.png".into());
+        assert!(validate_request(&request).is_err());
+        request.messages[0].image_url = None;
+        assert_eq!(
+            responses_body(&request)["input"][0]["content"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            compat_body(&request)["messages"][1]["content"],
+            "Solve this"
+        );
+    }
+
+    #[test]
     fn incomplete_and_failed_events_preserve_reported_usage() {
         let compat = json!({"choices":[{"finish_reason":"length"}],"usage":{"prompt_tokens":20,"completion_tokens":10}});
         let events = parse_compat_event(&compat).unwrap();
@@ -805,10 +872,12 @@ mod tests {
                 TextMessage {
                     role: "developer".into(),
                     content: "quoted untrusted context".into(),
+                    image_url: None,
                 },
                 TextMessage {
                     role: "user".into(),
                     content: "current question".into(),
+                    image_url: None,
                 },
             ],
         };
@@ -826,6 +895,7 @@ mod tests {
             messages: vec![TextMessage {
                 role: "user".into(),
                 content: "new speech".into(),
+                image_url: None,
             }],
             instructions: None,
         };
@@ -836,6 +906,7 @@ mod tests {
                 .map(|_| TextMessage {
                     role: "user".into(),
                     content: "\0".repeat(MAX_ANSWER),
+                    image_url: None,
                 })
                 .collect();
             assert!(validate_request(&escaped).is_ok());

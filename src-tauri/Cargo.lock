@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "0.1.2"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1659,6 +1659,7 @@ dependencies = [
  "hound",
  "jsonwebtoken",
  "log",
+ "quick-xml",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -1680,6 +1681,7 @@ dependencies = [
  "webrtc-vad",
  "windows",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

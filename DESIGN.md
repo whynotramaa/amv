@@ -157,7 +157,7 @@ Rows are factual, compact, and provenance-first: source (`MIC` or `SYSTEM`), sta
 
 ### Remote composer
 
-The composer is enabled only in the native app with a retained meeting and configured inference selection. Enter asks a question; Shift+Enter inserts a line. MIC context is a per-question opt-in and never enters automatic requests. Send new speech also retries a saved no-output request. Preparing/streaming states disable competing submissions and expose Cancel. Actual runtime connectivity is established by the request, not the availability label. Browser preview keeps native actions disabled.
+The composer is enabled only in the native app with a retained meeting and configured inference selection. Enter asks a question; Shift+Enter inserts a line. MIC question context defaults off and is enabled in meeting settings; it never enters automatic or hotkey transcript requests. Send new speech also retries a saved no-output request. Preparing/streaming states disable competing submissions and expose Cancel. Actual runtime connectivity is established by the request, not the availability label. Browser preview keeps native actions disabled.
 
 ### Connections
 
@@ -214,7 +214,7 @@ The editor uses labeled title/category/project/text controls, manual-source date
 
 ## Documents management
 
-Documents opens a separate 900×700 window (minimum 640×480), sharing the existing spacing, typography, surface, border, radius and control tokens. A restrained import disclosure precedes the library and source details. Local search excerpts use plain text with expandable provenance; no source markup or remote images execute. The narrow layout stacks the library and detail sections. Original document icons follow the existing stroke family. No shadows, serif fonts or Sparkles are introduced.
+Documents opens a separate 900×700 window (minimum 640×480), sharing the existing spacing, typography, surface, border, radius and control tokens. A restrained import disclosure precedes the library and source details. Supported formats include Word DOCX with explicit main-body/table extraction and excluded images, headers and footnotes; PDF remains unavailable. Local search excerpts use plain text with expandable provenance; no source markup or remote images execute. The narrow layout stacks the library and detail sections. Original document icons follow the existing stroke family. No shadows, serif fonts or Sparkles are introduced.
 
 Source reference is the default and answer permission starts off. Changed/missing source status, explicit reindexing, failure preservation and destructive confirmation explain the actual persistence behavior. Close waits during a change; native close destroys this management WebView. Mocked UI and source checks do not establish native dialog/rendering or inference acceptance.
 

@@ -544,7 +544,7 @@ mod tests {
             let meeting = store.create_meeting("upgrade", 0, &Settings::default())?;
             let context = context(&mut store, meeting.id)?;
             let old = store.begin_usage(context, "question")?;
-            store.conn.execute_batch("DROP TABLE api_legacy_usage; DROP TRIGGER api_usage_legacy; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; ALTER TABLE usage_events DROP COLUMN cost_micros; ALTER TABLE request_context DROP COLUMN credential_id; PRAGMA user_version=10;")?;
+            store.conn.execute_batch("DROP TABLE api_legacy_usage; DROP TRIGGER api_usage_legacy; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; ALTER TABLE usage_events DROP COLUMN cost_micros; ALTER TABLE request_context DROP COLUMN credential_id; ALTER TABLE message_requests DROP COLUMN image_url; PRAGMA user_version=10;")?;
             drop(store);
             let store = Store::open(&path)?;
             assert_eq!(store.usage_report(None)?.attempts[0].id, old);

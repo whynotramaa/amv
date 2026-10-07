@@ -58,7 +58,7 @@ export default function App() {
       if (after < before || (after === before && (next.answer.length < previous.answer.length ||
         (!['preparing', 'streaming'].includes(previous.status) && ['preparing', 'streaming'].includes(next.status))))) return;
     }
-    if (next.requestId !== responseRequestId.current) setSentThrough(Math.max(0, ...meetingRef.current.transcript.map(line => line.id)));
+    if (next.status === 'completed' && next.speechThrough != null) setSentThrough(old => Math.max(old, next.speechThrough!));
     responseRequestId.current = next.requestId;
     responseRef.current = next;
     setResponse(next);
@@ -209,11 +209,11 @@ export default function App() {
               <span className="field-label" id="setup-send-label">Send speech</span>
               <div className="choice-group" role="radiogroup" aria-labelledby="setup-send-label">
                 <label className="choice"><input type="radio" name="setupSend" checked={prefs.sendMode === 'on_hotkey'} onChange={() => setPrefs(old => ({ ...old, sendMode: 'on_hotkey' }))} disabled={meetingBusy} />On hotkey ({prefs.sendShortcut})</label>
-                <label className="choice"><input type="radio" name="setupSend" checked={prefs.sendMode === 'automatic'} onChange={() => setPrefs(old => ({ ...old, sendMode: 'automatic' }))} disabled={meetingBusy} />After a pause</label>
+                <label className="choice"><input type="radio" name="setupSend" checked={prefs.sendMode === 'automatic'} onChange={() => setPrefs(old => ({ ...old, sendMode: 'automatic' }))} disabled={meetingBusy} />After a pause (sends system and microphone speech)</label>
               </div>
             </div>
             {prefs.sendMode === 'automatic' && <div className="field"><label htmlFor="setup-delay">Send after {prefs.autoSendDelayMs / 1000}s of silence</label><input id="setup-delay" type="range" min={500} max={10000} step={500} value={prefs.autoSendDelayMs} onChange={event => setPrefs(old => ({ ...old, autoSendDelayMs: Number(event.target.value) }))} disabled={meetingBusy} /></div>}
-            <label className="checkbox"><input type="checkbox" checked={prefs.includeMicrophone} onChange={event => setPrefs(old => ({ ...old, includeMicrophone: event.target.checked }))} disabled={meetingBusy} />Include my microphone as context</label>
+            <label className="checkbox"><input type="checkbox" checked={prefs.includeMicrophone} onChange={event => setPrefs(old => ({ ...old, includeMicrophone: event.target.checked }))} disabled={meetingBusy} />Use microphone context for questions</label>
             {notice && <p className={`notice${notice.error ? ' error' : ''}`} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
             <div className="form-actions"><Button quiet disabled={meetingBusy} onClick={() => setMeetingSetup(false)}>Cancel meeting setup</Button><Button primary type="submit" disabled={meetingBusy || !captureConsent || !meetingTitle.trim()}>Start local meeting</Button></div>
           </form>}
@@ -232,6 +232,8 @@ export default function App() {
           <div className="shortcut-fields">
             <div className="field"><label htmlFor="overlay-shortcut">Show or hide</label><input id="overlay-shortcut" className="input" maxLength={100} value={draft.overlayShortcut} onChange={event => update('overlayShortcut', event.target.value)} required spellCheck={false} /></div>
             <div className="field"><label htmlFor="send-shortcut">Send speech</label><input id="send-shortcut" className="input" maxLength={100} value={draft.sendShortcut} onChange={event => update('sendShortcut', event.target.value)} required spellCheck={false} /></div>
+            <div className="field"><label htmlFor="screenshot-shortcut">Screenshot → text</label><input id="screenshot-shortcut" className="input" maxLength={100} value={draft.screenshotShortcut} onChange={event => update('screenshotShortcut', event.target.value)} required spellCheck={false} /><small>Recognizes text on the display under your pointer and sends it to this chat.</small></div>
+            <div className="field"><label htmlFor="image-shortcut">Send clipboard image</label><input id="image-shortcut" className="input" maxLength={100} value={draft.imageShortcut} onChange={event => update('imageShortcut', event.target.value)} required spellCheck={false} /><small>Copy an image first (Win+Shift+S). Sends immediately; requires an image-capable model.</small></div>
             <div className="field"><label htmlFor="new-chat-shortcut">New chat</label><input id="new-chat-shortcut" className="input" maxLength={100} value={draft.newChatShortcut} onChange={event => update('newChatShortcut', event.target.value)} required spellCheck={false} /></div>
           </div>
           <label className="checkbox"><input type="checkbox" checked={draft.launchOnLogin} onChange={event => update('launchOnLogin', event.target.checked)} />Launch when I sign in to Windows</label>

@@ -11,7 +11,7 @@ pub use usage::*;
 mod budgets;
 pub use budgets::*;
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 const MAX_CONTEXT_REQUEST: usize = 2 * 1024 * 1024;
 const MAX_CONTEXT_METADATA: usize = 1024 * 1024;
 const MAX_DOCUMENT_TEXT: usize = 256 * 1024;
@@ -354,19 +354,26 @@ pub struct Settings {
     pub send_shortcut: String,
     #[serde(default = "default_new_chat_shortcut")]
     pub new_chat_shortcut: String,
+    #[serde(default = "default_screenshot_shortcut")]
+    pub screenshot_shortcut: String,
+    #[serde(default = "default_image_shortcut")]
+    pub image_shortcut: String,
     pub launch_on_login: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub include_microphone: bool,
     #[serde(default = "default_auto_send_delay")]
     pub auto_send_delay_ms: u32,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_new_chat_shortcut() -> String {
     "Ctrl+Alt+N".into()
+}
+
+fn default_screenshot_shortcut() -> String {
+    "Ctrl+Shift+O".into()
+}
+fn default_image_shortcut() -> String {
+    "Ctrl+Shift+X".into()
 }
 
 fn default_auto_send_delay() -> u32 {
@@ -382,8 +389,10 @@ impl Default for Settings {
             overlay_shortcut: "Ctrl+Space".into(),
             send_shortcut: "Ctrl+Shift+Enter".into(),
             new_chat_shortcut: default_new_chat_shortcut(),
+            screenshot_shortcut: default_screenshot_shortcut(),
+            image_shortcut: default_image_shortcut(),
             launch_on_login: false,
-            include_microphone: true,
+            include_microphone: false,
             auto_send_delay_ms: default_auto_send_delay(),
         }
     }
@@ -402,6 +411,14 @@ impl Settings {
             "suggested_answers" | "summary" | "custom"
         ) {
             bail!("Response mode must be suggested_answers, summary, or custom");
+        }
+        for (name, key) in [
+            ("Screenshot", &self.screenshot_shortcut),
+            ("Clipboard image", &self.image_shortcut),
+        ] {
+            if key.trim().is_empty() || key.chars().count() > 100 {
+                bail!("{name} shortcut must be between 1 and 100 characters");
+            }
         }
         let instruction_len = self.custom_instruction.chars().count();
         if instruction_len > 4000 || self.custom_instruction.len() > 8192 {
@@ -498,6 +515,10 @@ impl Store {
             if version < 11 {
                 tx.execute_batch(include_str!("../migrations/011_api_budgets.sql"))
                     .context("apply API budget migration")?;
+            }
+            if version < 12 {
+                tx.execute_batch(include_str!("../migrations/012_request_images.sql"))
+                    .context("apply request image migration")?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .context("set schema version")?;
@@ -952,7 +973,23 @@ impl Store {
 
     pub fn latest_finalized_id(&self, meeting_id: i64) -> Result<Option<i64>> {
         validate_id(meeting_id, "meeting")?;
-        Ok(self.conn.query_row("SELECT MAX(id) FROM transcript_segments WHERE meeting_id = ?1 AND is_final = 1", [meeting_id], |row| row.get(0))?)
+        Ok(self.conn.query_row(
+            "SELECT MAX(id) FROM transcript_segments WHERE meeting_id = ?1 AND is_final = 1",
+            [meeting_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Only fully delivered rows may disappear from the visible speech buffer.
+    pub fn request_speech_through(&self, request_id: i64) -> Result<Option<i64>> {
+        validate_id(request_id, "request")?;
+        Ok(self.conn.query_row(
+            "SELECT CASE WHEN kind = 'transcript' THEN
+                cursor_after - CASE WHEN cursor_after_offset > 0 THEN 1 ELSE 0 END
+             END FROM message_requests WHERE id = ?1",
+            [request_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn prepare_transcript_request(
@@ -1106,7 +1143,19 @@ impl Store {
         meeting_id: i64,
         text: &str,
     ) -> Result<PendingRequest> {
+        self.prepare_image_question(meeting_id, text, None)
+    }
+
+    pub fn prepare_image_question(
+        &mut self,
+        meeting_id: i64,
+        text: &str,
+        image_url: Option<&str>,
+    ) -> Result<PendingRequest> {
         validate_id(meeting_id, "meeting")?;
+        if let Some(image) = image_url {
+            crate::visual::validate_image_url(image).map_err(anyhow::Error::msg)?;
+        }
         let text = validate_request_text(text, "question")?;
         let tx = self
             .conn
@@ -1117,13 +1166,28 @@ impl Store {
             bail!("meeting already has a pending request");
         }
         tx.execute(
-            "INSERT INTO message_requests (meeting_id, kind, status, user_text)
-             VALUES (?1, 'question', 'pending', ?2)",
-            params![meeting_id, text],
+            "INSERT INTO message_requests (meeting_id, kind, status, user_text, image_url)
+             VALUES (?1, 'question', 'pending', ?2, ?3)",
+            params![meeting_id, text, image_url],
         )?;
         let result = read_pending_request(&tx, tx.last_insert_rowid())?;
         tx.commit().context("commit question request")?;
         Ok(result)
+    }
+
+    pub fn request_image(&self, request_id: i64) -> Result<Option<String>> {
+        validate_id(request_id, "request")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT image_url FROM message_requests WHERE id = ?1")?;
+        let mut rows = stmt.query([request_id])?;
+        let row = rows.next()?.context("request not found")?;
+        bounded_row_fields(row, &[(0, crate::visual::MAX_IMAGE_URL)])?;
+        let value: Option<String> = row.get(0)?;
+        if let Some(image) = &value {
+            crate::visual::validate_image_url(image).map_err(anyhow::Error::msg)?;
+        }
+        Ok(value)
     }
 
     pub fn pending_request(&self, request_id: i64) -> Result<Option<PendingRequest>> {
@@ -2378,6 +2442,56 @@ fn transcript_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_retry_survives_restart_and_schema_eleven_upgrade() -> Result<()> {
+        let path = test_path("harness-images");
+        let result = (|| -> Result<()> {
+            let mut store = Store::open(&path)?;
+            let meeting = store.create_meeting("v2 chat", 0, &Settings::default())?;
+            let host = store.oauth_host_id()?;
+            store.conn.execute_batch(
+                "ALTER TABLE message_requests DROP COLUMN image_url; PRAGMA user_version=11;",
+            )?;
+            drop(store);
+            let mut store = Store::open(&path)?;
+            assert_eq!(store.oauth_host_id()?, host);
+            assert_eq!(store.meeting(meeting.id)?.title, "v2 chat");
+            let image = crate::visual::tests::image();
+            let pending =
+                store.prepare_image_question(meeting.id, "Inspect image", Some(&image))?;
+            assert_eq!(store.request_speech_through(pending.id)?, None);
+            store.begin_request(pending.id)?;
+            drop(store);
+            let mut store = Store::open(&path)?;
+            store.recover_interrupted_requests()?;
+            assert_eq!(store.retry_request(pending.id)?.id, pending.id);
+            assert_eq!(
+                store.request_image(pending.id)?.as_deref(),
+                Some(image.as_str())
+            );
+            store.begin_request(pending.id)?;
+            store.complete_request(pending.id, "answer", "chatgpt", "selected-model", None)?;
+            assert_eq!(
+                store.completed_history(meeting.id)?.entries[0].request_id,
+                pending.id
+            );
+            assert!(store
+                .prepare_image_question(meeting.id, "bad", Some("https://example.org/image.png"))
+                .is_err());
+            assert!(store.meeting_pending_request(meeting.id)?.is_none());
+            store.conn.execute(
+                "UPDATE message_requests SET image_url=?1 WHERE id=?2",
+                params!["z".repeat(crate::visual::MAX_IMAGE_URL + 1), pending.id],
+            )?;
+            assert!(store.request_image(pending.id).is_err());
+            Ok(())
+        })();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+        result
+    }
     use std::{fs, time::SystemTime};
 
     fn test_path(prefix: &str) -> std::path::PathBuf {
@@ -2393,7 +2507,7 @@ mod tests {
             let meeting = store.create_meeting("context", 0, &Settings::default())?;
             let pending = store.prepare_question_request(meeting.id, "new question")?;
             store.conn.execute_batch(
-                "DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; PRAGMA user_version=8;",
+                "DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; ALTER TABLE message_requests DROP COLUMN image_url; PRAGMA user_version=8;",
             )?;
             drop(store);
             let mut store = Store::open(&path)?;
@@ -2516,7 +2630,7 @@ mod tests {
         let result = (|| -> Result<()> {
             let old = Store::open(&path)?;
             let settings = old.settings()?;
-            old.conn.execute_batch("DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; PRAGMA user_version=7;")?;
+            old.conn.execute_batch("DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; ALTER TABLE message_requests DROP COLUMN image_url; PRAGMA user_version=7;")?;
             drop(old);
             let store = Store::open(&path)?;
             assert_eq!(store.settings()?, settings);
@@ -2660,7 +2774,7 @@ mod tests {
         let result = (|| -> Result<()> {
             // Exercise the actual previous-schema upgrade without changing other data.
             let old = Store::open(&path)?;
-            old.conn.execute_batch("DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; PRAGMA user_version=6;")?;
+            old.conn.execute_batch("DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; DROP TABLE usage_events; DROP TABLE request_context; DROP TRIGGER document_chunks_ai; DROP TRIGGER document_chunks_ad; DROP TRIGGER document_chunks_au; DROP TABLE document_chunks_fts; DROP TABLE document_chunks; DROP TABLE documents; DROP TABLE document_copy_cleanup; DROP TRIGGER memories_ai; DROP TRIGGER memories_ad; DROP TRIGGER memories_au; DROP TABLE memories_fts; DROP TABLE memories; ALTER TABLE message_requests DROP COLUMN image_url; PRAGMA user_version=6;")?;
             let settings = old.settings()?;
             drop(old);
             let store = Store::open(&path)?;
@@ -2791,6 +2905,51 @@ mod tests {
     }
 
     #[test]
+    fn mixed_source_speech_is_retryable_and_stays_in_conversation_history() -> Result<()> {
+        let mut store = Store::open(":memory:")?;
+        let meeting = store.create_meeting("interview", 0, &Settings::default())?;
+        let mut ids = Vec::new();
+        for (source, text) in [
+            (TranscriptSource::System, "interviewer"),
+            (TranscriptSource::Microphone, "my question"),
+        ] {
+            ids.push(
+                store
+                    .insert_finalized_transcript(meeting.id, 1, source, 0, None, 1, text)?
+                    .id,
+            );
+        }
+        let pending = store
+            .prepare_transcript_request(meeting.id, 100, 4096)?
+            .unwrap();
+        assert_eq!(pending.segment_ids, ids);
+        assert_eq!(pending.user_text, "interviewer\nmy question");
+        assert_eq!(
+            store.request_speech_through(pending.id)?,
+            ids.last().copied()
+        );
+        store.begin_request(pending.id)?;
+        store.fail_request(pending.id, "offline", None)?;
+        assert_eq!(
+            store
+                .prepare_transcript_request(meeting.id, 100, 4096)?
+                .unwrap()
+                .id,
+            pending.id
+        );
+        store.begin_request(pending.id)?;
+        store.complete_request(pending.id, "answer", "chatgpt", "model", None)?;
+        let history = store.completed_history(meeting.id)?;
+        assert_eq!(history.omitted_requests, 0);
+        assert_eq!(history.entries[0].text, pending.user_text);
+        assert_eq!(history.entries[1].text, "answer");
+        assert!(store
+            .prepare_transcript_request(meeting.id, 100, 4096)?
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
     fn large_transcript_slices_preserve_utf8_and_frozen_revision() -> Result<()> {
         let mut store = Store::open(":memory:")?;
         let meeting = store.create_meeting("large final", 0, &Settings::default())?;
@@ -2810,6 +2969,15 @@ mod tests {
         {
             assert!(request.user_text.len() <= 4096);
             assert_eq!(request.segment_ids, vec![row.id]);
+            let expected_through = if text.len() + request.user_text.len() < original.len() {
+                row.id - 1
+            } else {
+                row.id
+            };
+            assert_eq!(
+                store.request_speech_through(request.id)?,
+                Some(expected_through)
+            );
             assert_eq!(
                 store
                     .meeting_pending_request(meeting.id)?
@@ -2883,7 +3051,17 @@ mod tests {
         );
         let (_rows, omitted) = store.recent_transcript(meeting.id, 0, true)?;
         assert!(omitted);
+        let microphone = store.insert_finalized_transcript(
+            meeting.id,
+            300,
+            TranscriptSource::Microphone,
+            0,
+            None,
+            1,
+            "private microphone context",
+        )?;
         let through = store.latest_finalized_id(meeting.id)?.unwrap();
+        assert_eq!(through, microphone.id);
         let late = store.insert_finalized_transcript(
             meeting.id,
             201,
@@ -2902,7 +3080,8 @@ mod tests {
             store.begin_request(request.id)?;
             store.complete_request(request.id, "answer", "test", "model", None)?;
         }
-        assert_eq!(delivered.len(), 106);
+        assert_eq!(delivered.len(), 107);
+        assert!(delivered.contains(&microphone.id));
         assert!(!delivered.contains(&late.id));
         let next = store
             .prepare_transcript_request(meeting.id, 100, 4096)?
@@ -2918,7 +3097,7 @@ mod tests {
             let settings = Settings::default();
             let mut store = Store::open(&path)?;
             let meeting = store.create_meeting("call", 0, &settings)?;
-            let first = store.insert_finalized_transcript(
+            let _first = store.insert_finalized_transcript(
                 meeting.id,
                 1,
                 TranscriptSource::System,
@@ -2942,8 +3121,8 @@ mod tests {
             let pending = store
                 .prepare_transcript_request(meeting.id, 100, 64 * 1024)?
                 .unwrap();
-            assert_eq!(pending.user_text, "é");
-            assert_eq!(pending.segment_ids, vec![first.id]);
+            assert_eq!(pending.user_text, "é\nmic");
+            assert_eq!(pending.segment_ids.len(), 2);
             let request_id = pending.id;
             store.insert_finalized_transcript(
                 meeting.id,
@@ -2959,7 +3138,7 @@ mod tests {
             let mut store = Store::open(&path)?;
             let reopened = store.pending_request(request_id)?.unwrap();
             assert_eq!(reopened.id, request_id);
-            assert_eq!(reopened.user_text, "é");
+            assert_eq!(reopened.user_text, "é\nmic");
             store.begin_request(request_id)?;
             let reader = Store::open(&path)?;
             assert_eq!(
@@ -3000,7 +3179,7 @@ mod tests {
             let next = store
                 .prepare_transcript_request(meeting.id, 100, 64 * 1024)?
                 .unwrap();
-            assert_eq!(next.user_text, "late system");
+            assert_eq!(next.user_text, "late system\nlate mic");
             store.begin_request(next.id)?;
             store.complete_request(
                 next.id,

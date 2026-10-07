@@ -431,7 +431,7 @@ mod tests {
             store.begin_request(request.id)?;
             let context = store
                 .save_request_context(request.id, "chatgpt", None, "old", "{}", "{}", false)?;
-            store.conn.execute_batch("DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; ALTER TABLE request_context DROP COLUMN credential_id; DROP TABLE usage_events; ALTER TABLE request_context DROP COLUMN account_id; PRAGMA user_version=9;")?;
+            store.conn.execute_batch("DROP TRIGGER api_usage_legacy; DROP TABLE api_legacy_usage; DROP TABLE api_budget_receipts; DROP TABLE api_key_caps; DROP TABLE api_prices; ALTER TABLE request_context DROP COLUMN credential_id; DROP TABLE usage_events; ALTER TABLE request_context DROP COLUMN account_id; ALTER TABLE message_requests DROP COLUMN image_url; PRAGMA user_version=9;")?;
             drop(store);
             let store = Store::open(&path)?;
             assert_eq!(

@@ -12,6 +12,7 @@ pub mod meeting;
 pub mod providers;
 pub mod speech;
 pub mod store;
+pub mod visual;
 pub mod window;
 
 #[cfg(feature = "desktop")]

@@ -87,7 +87,7 @@ The compiler currently uses a conservative application cap and byte-based estima
 
 ## Local documents
 
-Open Documents from the tray or document icon. Import UTF-8 `.txt`, `.md` or `.json` files using the native Windows file picker. Choose an original-file reference or managed local copy. Limits are 1 MiB per source and 256 KiB extracted text; PDF and Word support remain unfinished. JSON indexes meaningful scalar leaves with their paths. No source is uploaded for indexing.
+Open Documents from the tray or document icon. Import UTF-8 `.txt`, `.md`, `.json` or Word `.docx` files using the native Windows file picker. Choose an original-file reference or managed local copy. Limits are 1 MiB per source and 256 KiB extracted text; DOCX extracts UTF-8 main-body text and tables only; headers, footnotes, images and embedded objects are excluded. ZIP64, ambiguous ZIP end records and alternate-content blocks are rejected. Export a rejected Word file to UTF-8 text before import. PDF support remains unfinished. JSON indexes meaningful scalar leaves with their paths. No source is uploaded for indexing.
 
 New imports are local only. Enable a document explicitly for relevant authorized answers. Metadata retains original path, raw-file hash, modification time and index version. Selection checks for changes; reindexing is explicit and replaces chunks only after success. Local search includes disabled documents. Deletion removes indexed text and schedules managed-copy cleanup while preserving the original file. Retrieval uses enabled-only FTS5/BM25, at most eight chunks and 16 KiB of text. Absolute source paths are omitted from remote evidence.
 

@@ -66,6 +66,7 @@ pub struct DispatchState {
     pub error: Option<String>,
     pub usage: Option<RequestUsage>,
     pub user_text: Option<String>,
+    pub speech_through: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -99,6 +100,7 @@ where
         error: None,
         usage: None,
         user_text: Some(user_text),
+        speech_through: store.request_speech_through(pending.id)?,
     };
     on_state(state.clone());
 
@@ -124,7 +126,8 @@ where
                 state,
             });
         }
-        let compile_input = compile_input(&input.compile, &pending, &target.model)?;
+        let mut compile_input = compile_input(&input.compile, &pending, &target.model)?;
+        compile_input.image_url = store.request_image(pending.id)?;
         let compiled = match context::compile(compile_input, input.budget) {
             Ok(value) => value,
             Err(error) => {
@@ -430,22 +433,8 @@ fn compile_input(
 ) -> Result<CompileInput> {
     let mut input = base.clone();
     input.model = model.to_owned();
-    input.user_message = match pending.kind {
-        RequestKind::Transcript => {
-            transcript_user_message(&pending.user_text, &pending.segment_ids)?
-        }
-        RequestKind::Question => pending.user_text.clone(),
-    };
+    input.user_message = pending.user_text.clone();
     Ok(input)
-}
-
-fn transcript_user_message(text: &str, segment_ids: &[i64]) -> Result<String> {
-    Ok(serde_json::json!({
-        "source": "system",
-        "segment_ids": segment_ids,
-        "text": text,
-    })
-    .to_string())
 }
 
 fn should_fallback(failure: &inference::StreamFailure, allowed: bool) -> bool {
@@ -529,17 +518,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transcript_message_contains_only_frozen_text_and_ids() {
-        let value = transcript_user_message("hello", &[4, 9]).unwrap();
-        assert_eq!(
-            value,
-            r#"{"segment_ids":[4,9],"source":"system","text":"hello"}"#
-        );
-    }
-
-    #[test]
-    fn question_is_not_rewritten() {
-        let pending = PendingRequest {
+    fn typed_and_transcribed_messages_are_not_rewritten() {
+        let mut pending = PendingRequest {
             id: 1,
             meeting_id: 2,
             kind: RequestKind::Question,
@@ -552,6 +532,7 @@ mod tests {
         let base = CompileInput {
             model: "old".into(),
             user_message: "parent value".into(),
+            image_url: None,
             custom_instruction: Some("keep me".into()),
             recent_transcript: vec![],
             history: vec![],
@@ -562,6 +543,9 @@ mod tests {
         let input = compile_input(&base, &pending, "new").unwrap();
         assert_eq!(input.user_message, "custom question");
         assert_eq!(input.custom_instruction.as_deref(), Some("keep me"));
+        pending.kind = RequestKind::Transcript;
+        let input = compile_input(&base, &pending, "new").unwrap();
+        assert_eq!(input.user_message, pending.user_text);
     }
 
     #[test]
@@ -593,6 +577,7 @@ mod tests {
             compile: CompileInput {
                 model: "model".into(),
                 user_message: String::new(),
+                image_url: None,
                 custom_instruction: None,
                 recent_transcript: vec![],
                 history: vec![],

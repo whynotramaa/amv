@@ -8,6 +8,8 @@ export type Settings = {
   overlayShortcut: string;
   sendShortcut: string;
   newChatShortcut: string;
+  screenshotShortcut: string;
+  imageShortcut: string;
   launchOnLogin: boolean;
   includeMicrophone: boolean;
   autoSendDelayMs: number;
@@ -34,8 +36,8 @@ export type MeetingState = {
 export const desktop = isTauri();
 export const defaults: Settings = {
   sendMode: 'on_hotkey', responseMode: 'suggested_answers', customInstruction: '',
-  overlayShortcut: 'Ctrl+Space', sendShortcut: 'Ctrl+Shift+Enter', newChatShortcut: 'Ctrl+Alt+N', launchOnLogin: false,
-  includeMicrophone: true, autoSendDelayMs: 2000,
+  overlayShortcut: 'Ctrl+Space', sendShortcut: 'Ctrl+Shift+Enter', newChatShortcut: 'Ctrl+Alt+N', screenshotShortcut: 'Ctrl+Shift+O', imageShortcut: 'Ctrl+Shift+X', launchOnLogin: false,
+  includeMicrophone: false, autoSendDelayMs: 2000,
 };
 const previewKey = 'harness-interface-preview-settings';
 
@@ -115,6 +117,7 @@ export const reauthorizeAccount = (accountId: string) => invoke<void>('reauthori
 export const signOutAccount = (accountId: string) => invoke<boolean>('sign_out_chatgpt_account', { accountId });
 
 export type ResponseState = {
+  speechThrough?: number | null;
   requestId: number; attemptId: number; meetingId: number;
   status: 'preparing' | 'streaming' | 'completed' | 'partial' | 'error' | 'cancelled';
   answer: string; provider: string | null; model: string | null;
@@ -163,7 +166,7 @@ export async function openDocuments(): Promise<void> { if (desktop) await invoke
 
 export type ContextSnapshot = { credentialId?:string|null; accountId?:string|null;
   id: number; requestId: number; provider: string; model: string; createdAt: number; upstreamOmitted: boolean;
-  request: { model: string; instructions: string | null; messages: { role: string; content: string }[] };
+  request: { model: string; instructions: string | null; messages: { role: string; content: string; image_url?: string | null }[] };
   metadata: { model: string; inputTokenBudget: number; responseReserveTokens: number; estimatedInputTokens: number;
     omissions: { kind: string; count: number }[]; truncations: { kind: string; id?: string; source?: string; startMs?: number; role?: string }[]; excludedIds: string[] };
 };

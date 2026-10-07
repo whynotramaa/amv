@@ -11,17 +11,45 @@ Source now implements the official dynamic flow below and uses the public Respon
 
 ## Decision that gates the ChatGPT path
 
-OpenAI's current docs describe an OSS/local dynamic-registration flow, but the
-current request-client-ID page says Sign in with ChatGPT is offered to a
-select group of commercial partners and directs applicants to an interest
-form. The docs do not prove that this private personal app is eligible.
-Partnership/interest-form submission does not itself prove approval, nor does
-it provide a client ID. Do not promise ChatGPT-plan inference until OpenAI
-confirms eligibility or a real end-to-end test succeeds.
+OpenAI's current overview covers open-source and locally hosted apps. The
+official cookbook explicitly includes personal projects that run locally.
+Harness uses that dynamic public-client flow; it does not need a commercial
+identity-only client ID. Paid or remotely hosted distribution has a separate
+interest process. Account/workspace eligibility and successful inference still
+require a live check. Do not infer them from successful browser login.
 
 Primary sources: [OSS overview](https://developers.openai.com/siwc/token-sharing-open-source),
+[official local-app cookbook](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt),
 [request a client ID](https://developers.openai.com/siwc/request-client-id),
 [interest form](https://openai.com/form/sign-in-with-chatgpt-interest/).
+
+## Recover from the obsolete installer
+
+The reported first-page JSON has code `invalid_authorize_request`, type
+`invalid_request_error`, and no parameter. The failing URL uses an `app_...`
+client ID. Earlier Harness builds embedded Codex's fixed client; current source
+registers new connections with `dynamic_agent_client`. The generic error alone
+does not identify a rejected parameter or prove an eligibility restriction.
+
+1. Quit Harness from its tray menu before installing the freshly checked build.
+2. Keep its application data. Do not delete credentials or regenerate the host
+   ID to repair an authorization-request error.
+3. Open Connections and add a new account. Its first request must use
+   `client_id=dynamic_agent_client`. Use Account options for later reauthorization
+   of a successfully registered connection, which reuses its issued ID.
+4. Complete consent, verify model discovery and one answer, then restart and
+   verify the saved connection. No full-flow claim is valid before these checks.
+
+The current documented request reached OpenAI's login page in an unauthenticated
+HTTP/browser probe on 2026-10-07. This verifies initial acceptance only. It does
+not verify the user's Windows installation, browser session, consent or plan.
+
+Before distributing a package, run
+`node scripts/check-chatgpt-auth.mjs <path-to-harness.exe>` on the executable
+being bundled. The check rejects known obsolete Codex integration markers and
+requires the SIWC markers. It supplements the Rust request/callback tests;
+embedded strings alone do not prove runtime behavior. `scripts/package.ps1`
+runs it after building, including when general checks are skipped.
 
 ## ChatGPT: dynamic public-client flow
 

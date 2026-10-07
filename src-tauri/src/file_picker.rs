@@ -51,8 +51,8 @@ fn pick_on_sta(owner: usize) -> anyhow::Result<Option<PathBuf>> {
             dialog.GetOptions()? | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM,
         )?;
         dialog.SetFileTypes(&[COMDLG_FILTERSPEC {
-            pszName: w!("Text, Markdown and JSON"),
-            pszSpec: w!("*.txt;*.md;*.json"),
+            pszName: w!("Text, Markdown, JSON and Word DOCX"),
+            pszSpec: w!("*.txt;*.md;*.json;*.docx"),
         }])?;
         dialog.SetTitle(w!("Import a local document"))?;
         if let Err(error) = dialog.Show(Some(HWND(owner as *mut core::ffi::c_void))) {

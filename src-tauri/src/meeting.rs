@@ -30,6 +30,8 @@ pub struct MeetingState {
     pub started_at: Option<i64>,
     pub transcript: Vec<TranscriptRow>,
     pub error: Option<String>,
+    #[serde(skip)]
+    finalized_speech_through: Option<i64>,
 }
 
 impl Default for MeetingState {
@@ -41,6 +43,7 @@ impl Default for MeetingState {
             started_at: None,
             transcript: Vec::new(),
             error: None,
+            finalized_speech_through: None,
         }
     }
 }
@@ -82,11 +85,21 @@ impl MeetingController {
             .map_err(|_| "Meeting state is unavailable".into())
     }
 
+    /// The hotkey reads this committed high-water mark without cloning the transcript or waiting.
+    pub fn speech_cutoff(&self) -> Result<(Option<i64>, Option<i64>), String> {
+        self.shared
+            .state
+            .try_lock()
+            .map(|state| (state.meeting_id, state.finalized_speech_through))
+            .map_err(|_| "Meeting state is busy. Press the shortcut again.".into())
+    }
+
     pub fn restore(
         &mut self,
         app: &AppHandle,
         meeting: Meeting,
         rows: Vec<TranscriptRow>,
+        finalized_speech_through: Option<i64>,
     ) -> Result<MeetingState, String> {
         self.reap_finished()?;
         if self.worker.is_some()
@@ -114,6 +127,7 @@ impl MeetingController {
             started_at: Some(meeting.started_at),
             transcript,
             error: None,
+            finalized_speech_through,
         };
         emit_state(app, &self.shared);
         self.state()
@@ -186,6 +200,7 @@ impl MeetingController {
                 started_at: Some(meeting.started_at),
                 transcript: Vec::new(),
                 error: None,
+                finalized_speech_through: None,
             };
         }
         emit_state(&app, &self.shared);
@@ -514,8 +529,8 @@ fn process_event(
                 TranscriptSource::Microphone => "microphone",
             };
             if let Ok(mut state) = shared.state.lock() {
-                push_transcript_row(
-                    &mut state.transcript,
+                record_finalized_row(
+                    &mut state,
                     TranscriptRow {
                         id: row.id,
                         source,
@@ -525,9 +540,7 @@ fn process_event(
                 );
             }
             emit_state(app, shared);
-            if source_db == TranscriptSource::System {
-                crate::desktop::speech_finalized(app, meeting_id);
-            }
+            crate::desktop::speech_finalized(app, meeting_id);
         }
         SpeechEvent::Error { message, .. } => {
             fail(app, shared, message);
@@ -536,6 +549,11 @@ fn process_event(
         SpeechEvent::Partial { .. } => {}
     }
     Ok(())
+}
+
+fn record_finalized_row(state: &mut MeetingState, row: TranscriptRow) {
+    state.finalized_speech_through = Some(state.finalized_speech_through.unwrap_or(0).max(row.id));
+    push_transcript_row(&mut state.transcript, row);
 }
 
 fn push_transcript_row(rows: &mut Vec<TranscriptRow>, row: TranscriptRow) {
@@ -614,6 +632,63 @@ mod tests {
         assert_eq!(state.status, "idle");
         assert!(state.meeting_id.is_none());
         assert!(state.transcript.is_empty());
+    }
+
+    #[test]
+    fn cached_speech_cutoff_includes_mic_and_survives_chronological_eviction() {
+        let controller = MeetingController::new();
+        {
+            let mut state = controller.shared.state.lock().unwrap();
+            state.meeting_id = Some(1);
+            for id in 1..=MAX_ROWS as i64 {
+                record_finalized_row(
+                    &mut state,
+                    TranscriptRow {
+                        id,
+                        source: "system",
+                        start_ms: 100 + id,
+                        text: "speech".into(),
+                    },
+                );
+            }
+            record_finalized_row(
+                &mut state,
+                TranscriptRow {
+                    id: 1000,
+                    source: "system",
+                    start_ms: 0,
+                    text: "late finalization".into(),
+                },
+            );
+            assert!(!state.transcript.iter().any(|row| row.id == 1000));
+            record_finalized_row(
+                &mut state,
+                TranscriptRow {
+                    id: 2000,
+                    source: "microphone",
+                    start_ms: 1000,
+                    text: "private mic".into(),
+                },
+            );
+            assert!(controller.speech_cutoff().is_err()); // A hotkey never waits on this lock.
+            assert!(serde_json::to_value(&*state)
+                .unwrap()
+                .get("finalizedSpeechThrough")
+                .is_none());
+        }
+        let captured = controller.speech_cutoff().unwrap();
+        assert_eq!(captured, (Some(1), Some(2000)));
+        record_finalized_row(
+            &mut controller.shared.state.lock().unwrap(),
+            TranscriptRow {
+                id: 2001,
+                source: "system",
+                start_ms: 1001,
+                text: "after the press".into(),
+            },
+        );
+        assert_eq!(captured.1, Some(2000));
+        assert_eq!(controller.speech_cutoff().unwrap().1, Some(2001));
     }
 
     #[test]

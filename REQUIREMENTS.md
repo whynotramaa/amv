@@ -142,7 +142,7 @@ Evidence commands used repeatedly below:
 
 ## 12. Document ingestion, PLAN 1052-1099
 
-- [ ] `PARTIAL` Local ingestion of `.md`, `.txt`, meaningful `.json`, reliable bundled `.pdf`, and optional later `.docx`; extraction, normalization, chunking, metadata, FTS, embeddings, ready state. Evidence: documents.rs handles bounded UTF-8 TXT/Markdown/JSON extraction, normalization and hashing; schema8 chunks/FTS and dedicated UI/native picker are integrated. PDF/DOCX and embeddings remain pending.
+- [ ] `PARTIAL` Local ingestion of `.md`, `.txt`, meaningful `.json`, reliable bundled `.pdf`, and optional later `.docx`; extraction, normalization, chunking, metadata, FTS, embeddings, ready state. Evidence: documents.rs handles bounded UTF-8 TXT/Markdown/JSON and DOCX main-body extraction, normalization and hashing; schema8 chunks/FTS and dedicated UI/native picker are integrated. DOCX tables/body text are supported with explicit excluded-content and resource limits; native acceptance, PDF and embeddings remain pending.
 - [x] `IMPLEMENTED` No source upload; store path/hash/modified time/text/chunks/index version and offer re-index when source changes. Evidence: schema8 path/hash/modified time/index version and chunks, explicit changed-source check/reindex, reference/copy policy, default-off sharing and original-safe deletion are implemented. Native acceptance remains unverified.
 
 ## 13. Context compiler, PLAN 1101-1180
@@ -283,7 +283,7 @@ The literal inventory in [PLAN_BULLETS.md](PLAN_BULLETS.md) records each bullet 
 2. **Pending dispatch acceptance.** Exercise the implemented compiler, sequential batches, cancellation, retries and fresh remote consent on Windows with real providers.
 3. **Blocker: official ChatGPT proof.** Verify the restored official dynamic-registration integration on Windows. Test with an actually eligible account/client configuration. Private-plan eligibility remains unproven.
 4. **Pending provider acceptance.** Exercise consented pre-output fallback and partial recovery; verify implemented editable pricing/per-key caps and add model-specific budgets.
-5. **Pending memory/context work.** Manual memory and bounded lexical retrieval are implemented. Add PDF/DOCX ingestion, derived artifacts, hybrid retrieval, entity relationships, named context profiles and broader deletion controls.
+5. **Pending memory/context work.** Manual memory and bounded lexical retrieval are implemented. Add PDF ingestion, derived artifacts, hybrid retrieval, entity relationships, named context profiles and broader deletion controls.
 6. **Blocker: Windows product acceptance.** Finish overlay/privacy/control center/screenshot/OCR, clean VM/physical-laptop tests, accessibility/UI pass, integration pass, and runtime/low-RAM pass.
 
 These are pending requirements and acceptance gaps. Source implementation and synthetic UI fixtures do not prove Windows hardware behavior, eligible sign-in, memory retrieval or clean-machine acceptance.

@@ -5,6 +5,8 @@ if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') { throw 'Run this
 if (-not $SkipChecks) { & "$PSScriptRoot/build-windows.ps1" }
 & npm.cmd run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis
 if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
+& node.exe "$PSScriptRoot/check-chatgpt-auth.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'ChatGPT release verification failed.' }
 $installer = Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $installer) { throw 'NSIS installer was not produced.' }
 New-Item -ItemType Directory -Force 'dist' | Out-Null

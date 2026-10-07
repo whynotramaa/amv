@@ -1052,11 +1052,12 @@ mod tests {
     #[test]
     fn dynamic_registration_and_returning_accounts_keep_security_bindings() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
+        let host = uuid::Uuid::new_v4().urn().to_string();
         let (initial, returning) = runtime.block_on(async {
             (
-                AuthAttempt::prepare("urn:uuid:host").await.unwrap(),
+                AuthAttempt::prepare(&host).await.unwrap(),
                 AuthAttempt::prepare_for_account(
-                    "urn:uuid:host",
+                    &host,
                     "oaiapp_saved",
                     "subject",
                     Some("old.identity.hint"),
@@ -1068,13 +1069,46 @@ mod tests {
         });
         let initial_url = Url::parse(initial.authorization_url()).unwrap();
         let initial_values: HashMap<_, _> = initial_url.query_pairs().into_owned().collect();
-        assert_eq!(initial_values["client_id"], DYNAMIC_CLIENT);
+        assert_eq!(initial_values["client_id"], "dynamic_agent_client");
         assert_eq!(initial_values["agent_name_hint"], "Harness");
-        assert_eq!(initial_values["ext_agent_host_id"], "urn:uuid:host");
+        assert_eq!(initial_values["ext_agent_host_id"], host);
+        assert_eq!(initial_values.len(), 11);
+        for attempt in [&initial, &returning] {
+            let url = Url::parse(attempt.authorization_url()).unwrap();
+            assert_eq!(url.scheme(), "https");
+            assert_eq!(url.host_str(), Some("auth.openai.com"));
+            assert_eq!(url.path(), "/api/accounts/authorize");
+            let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+            assert_eq!(url.query_pairs().count(), query.len());
+            assert_eq!(query["response_type"], "code");
+            assert_eq!(query["resource"], "https://api.openai.com/v1");
+            assert_eq!(
+                query["scope"],
+                "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
+            );
+            assert_eq!(query["code_challenge_method"], "S256");
+            assert_eq!(query["state"], attempt.state.as_str());
+            assert_eq!(query["nonce"], attempt.nonce.as_str());
+            assert_eq!(query["redirect_uri"], attempt.redirect_uri);
+            assert_eq!(
+                query["code_challenge"],
+                URL_SAFE_NO_PAD.encode(Sha256::digest(attempt.verifier.as_bytes()))
+            );
+            assert!(!query.contains_key("originator"));
+            assert!(!query.contains_key("codex_cli_simplified_flow"));
+            let redirect = Url::parse(&query["redirect_uri"]).unwrap();
+            assert_eq!(redirect.scheme(), "http");
+            assert_eq!(redirect.host_str(), Some("127.0.0.1"));
+            assert_eq!(redirect.path(), "/auth/callback");
+            assert_eq!(
+                redirect.port(),
+                Some(attempt.listener.local_addr().unwrap().port())
+            );
+        }
         let url = Url::parse(returning.authorization_url()).unwrap();
         let values: HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(values["client_id"], "oaiapp_saved");
-        assert_eq!(values["ext_agent_host_id"], "urn:uuid:host");
+        assert_eq!(values["ext_agent_host_id"], host);
         assert_eq!(values["resource"], RESOURCE);
         assert_eq!(values["scope"], SCOPES);
         assert_eq!(values["id_token_hint"], "old.identity.hint");
