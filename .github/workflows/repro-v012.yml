@@ -1,0 +1,27 @@
+name: Repro v0.1.2 install
+on:
+  push:
+    branches: [ccr-3c533634-lhvg90]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Harness-Setup-x64
+          path: old
+          run-id: 37588182980
+          github-token: ${{ github.token }}
+      - name: Install and launch v0.1.2
+        shell: pwsh
+        run: ./scripts/smoke-windows.ps1 -Installer old/Harness-Setup-x64.exe -Out smoke-old
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Harness-smoke-v0.1.2
+          path: smoke-old/
+          retention-days: 3
