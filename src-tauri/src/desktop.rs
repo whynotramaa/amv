@@ -500,12 +500,18 @@ pub(crate) fn speech_finalized(app: &tauri::AppHandle, meeting_id: i64) {
             (core.response.clone(), core.settings.auto_send_delay_ms)
         };
         let mine = {
-            let Ok(mut response) = response.lock() else { return };
+            let Ok(mut response) = response.lock() else {
+                return;
+            };
             response.auto_ticket = response.auto_ticket.wrapping_add(1);
             response.auto_ticket
         };
         tokio::time::sleep(Duration::from_millis(delay.into())).await;
-        if response.lock().map(|r| r.auto_ticket != mine).unwrap_or(true) {
+        if response
+            .lock()
+            .map(|r| r.auto_ticket != mine)
+            .unwrap_or(true)
+        {
             return;
         }
         let _ = tauri::async_runtime::spawn_blocking(move || {
@@ -2411,7 +2417,9 @@ async fn new_chat(app: tauri::AppHandle) -> Result<crate::meeting::MeetingState,
         (core.meeting.clone(), core.response.clone())
     };
     let done = {
-        let mut response = response.lock().map_err(|_| "Response state is unavailable")?;
+        let mut response = response
+            .lock()
+            .map_err(|_| "Response state is unavailable")?;
         response.auto_meeting = None;
         response.manual_through = None;
         if let Some(cancel) = response.cancel.take() {

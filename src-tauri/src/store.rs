@@ -413,7 +413,8 @@ impl Settings {
         {
             bail!("Overlay and send shortcuts must be different");
         }
-        if self.new_chat_shortcut.trim().is_empty() || self.new_chat_shortcut.chars().count() > 100 {
+        if self.new_chat_shortcut.trim().is_empty() || self.new_chat_shortcut.chars().count() > 100
+        {
             bail!("New chat shortcut must be between 1 and 100 characters");
         }
         Ok(())
