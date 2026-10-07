@@ -73,4 +73,6 @@ An 11-second upstream reference clip decoded correctly in 7.28 seconds with appr
 
 With `npm run dev` running, use `npm run check:ui`. Install Playwright Chromium with `npx playwright install chromium`, or point `HARNESS_BROWSER_EXECUTABLE` at an existing Chromium/Edge executable. The check mocks native IPC and credentials. It verifies response attempts, stale events, consent, safe Markdown/code/links/images, copying, narrow layouts, and reopening a saved meeting. It does not prove Windows audio, OAuth eligibility, or native clipboard behavior.
 
+After `npm run build`, use `HARNESS_PRODUCTION_FIXTURE=1 npm run check:ui` to run the same IPC fixture against production assets with the native content security policy. This verifies CSS-based syntax colors without permitting inline styles.
+
 The compiler currently uses a conservative application cap and byte-based estimate. Discovered model-specific limits, exact tokenizers, retrieval, inspectable compiled context, usage pages, and the remaining PLAN features are still pending. See REQUIREMENTS.md and PROGRESS.md.

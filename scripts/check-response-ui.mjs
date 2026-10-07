@@ -1,11 +1,13 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 const previewUrl = process.env.HARNESS_PREVIEW_URL || 'http://127.0.0.1:1420';
 const reviewDir = fileURLToPath(new URL('../.impeccable/review/', import.meta.url));
 const browser = await chromium.launch({executablePath:process.env.HARNESS_BROWSER_EXECUTABLE || undefined,headless:true,args:['--no-sandbox']});
 const page = await browser.newPage({viewport:{width:520,height:600}});
-const errors=[]; const imageRequests=[];
+const errors=[]; const imageRequests=[]; const policyErrors=[];
+page.on('console', message=>{if(/Content Security Policy|violates.*directive/i.test(message.text())) policyErrors.push(message.text());});
 page.on('pageerror', e=>{ errors.push(String(e)); console.error(String(e)); });
 page.on('request', request=>{if(request.url().includes('tracking.invalid')) imageRequests.push(request.url());});
 await page.addInitScript(()=>{
@@ -52,9 +54,21 @@ await page.addInitScript(()=>{
  };
  Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{window.copied=text;}}});
 });
-await page.route('**/src/main.tsx*',async route=>{
+const mockPrefix = "import { mockIPC } from '/node_modules/@tauri-apps/api/mocks.js'; mockIPC(window.fixtureInvoke,{shouldMockEvents:true});\n";
+if (process.env.HARNESS_PRODUCTION_FIXTURE) {
+ const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+ const index = await readFile(new URL('../dist/index.html', import.meta.url), 'utf8');
+ const entry = index.match(/src="([^"]+\.js)"/)[1];
+ await page.route(previewUrl + '/**', async route => {
+  const path = new URL(route.request().url()).pathname;
+  const file = path === '/' ? new URL('../dist/index.html', import.meta.url) : path === '/node_modules/@tauri-apps/api/mocks.js' ? new URL('../node_modules/@tauri-apps/api/mocks.js', import.meta.url) : new URL('../dist' + path, import.meta.url);
+  const body = await readFile(file);
+  const contentType = path === '/' ? 'text/html' : path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : path.endsWith('.woff2') ? 'font/woff2' : 'application/octet-stream';
+  await route.fulfill({body: path === entry ? mockPrefix + body.toString() : body, contentType, headers: {'Content-Security-Policy':config.app.security.csp}});
+ });
+} else await page.route('**/src/main.tsx*',async route=>{
  const response=await route.fetch();
- await route.fulfill({response,body:"import { mockIPC } from '/node_modules/@tauri-apps/api/mocks.js'; mockIPC(window.fixtureInvoke,{shouldMockEvents:true});\n"+await response.text()});
+ await route.fulfill({response,body:mockPrefix+await response.text()});
 });
 await page.goto(previewUrl);
 await page.getByText('Acme discovery',{exact:true}).waitFor();
@@ -68,6 +82,9 @@ assert.equal(await page.locator('.response-markdown img').count(),0);
 assert.equal(await page.locator('.response-markdown > p code').innerText(),'USD');
 await page.waitForFunction(()=>document.querySelector('.response-code code span span'));
 assert(await page.locator('.response-code code span span').count()>0);
+assert.equal(await page.locator('.response-code [style]').count(),0);
+assert(await page.locator('.response-code .code-literal').count()>0);
+assert(await page.locator('.response-code .code-literal').first().evaluate(element=>getComputedStyle(element).color !== getComputedStyle(element.closest('code')).color));
 assert.equal(await page.locator('a[href^="javascript:"]').count(),0);
 assert.equal(await page.evaluate(()=>window.calls.find(c=>c.cmd==='ask_meeting').args.includeMicrophone),true);
 await page.getByRole('button',{name:'Copy code',exact:true}).click();
@@ -114,5 +131,6 @@ await page.getByRole('heading',{name:'Recovered meeting',exact:true}).waitFor();
 assert.equal(await page.evaluate(()=>window.calls.find(c=>c.cmd==='restore_saved_meeting').args.meetingId),7);
 assert.equal(await page.getByText('Some earlier meeting context was omitted.').count(),0);
 assert.deepEqual(errors,[]);
+assert.deepEqual(policyErrors,[]);
 console.log('Response fixture passed: stale replies/events, question MIC opt-in, GFM/code/copy, safe links/images, narrow overflow, fresh meeting consent. UI-only evidence.');
 await browser.close();

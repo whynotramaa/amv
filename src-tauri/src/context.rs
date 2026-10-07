@@ -512,7 +512,7 @@ mod tests {
         let compiled = compile(
             value,
             ModelBudget {
-                context_tokens: 770,
+                context_tokens: PRODUCT_INSTRUCTIONS.len() + 394,
                 response_reserve_tokens: 10,
             },
         )

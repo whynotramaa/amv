@@ -149,3 +149,8 @@ textarea.input { resize: vertical; min-height: 104px; }
 .meeting-options > summary { list-style: none; }
 .meeting-options > summary::-webkit-details-marker { display: none; }
 .transcript:not([open]) > summary svg, .meeting-options:not([open]) > summary svg { transform: rotate(-90deg); }
+
+.code-primary { color: var(--text-primary); }
+.code-comment { color: var(--text-tertiary); }
+.code-literal { color: var(--success); }
+.code-keyword { color: var(--accent); }

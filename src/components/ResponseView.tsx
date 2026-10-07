@@ -17,10 +17,14 @@ const grammars = {
 };
 const aliases: Record<string, keyof typeof grammars> = { js: 'javascript', ts: 'typescript', py: 'python', rs: 'rust', sh: 'bash', shell: 'bash' };
 let highlighter: ReturnType<typeof createHighlighterCore> | undefined;
+const tokenClasses: Record<string, string> = {};
 function codeHighlighter() {
   // ponytail: one cached JS engine, at most seven grammars. Dispose idle grammars if measured memory warrants it.
   const css = getComputedStyle(document.documentElement);
   const color = (name: string) => css.getPropertyValue(name).trim();
+  for (const [token, className] of [['--text-primary', 'code-primary'], ['--text-tertiary', 'code-comment'], ['--success', 'code-literal'], ['--accent', 'code-keyword']]) {
+    tokenClasses[color(token).toLowerCase()] = className;
+  }
   return highlighter ??= createHighlighterCore({
     engine: createJavaScriptRegexEngine({ forgiving: true }), langs: [],
     themes: [{ name: 'harness', type: 'dark', colors: { 'editor.background': color('--background'), 'editor.foreground': color('--text-primary') },
@@ -73,7 +77,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
       if (version.current === current) setCopyState('Copied');
     } catch { if (version.current === current) setCopyState('Copy failed'); }
   }
-  return <div className="response-code"><div className="response-code-heading"><span>{language || 'Code'}</span><Button quiet onClick={() => void copy()}>{copyState}</Button></div><pre><code>{highlighted?.text === text ? highlighted.tokens.map((line, index) => <span key={index}>{line.map((token, part) => <span key={part} style={{ color: token.color }}>{token.content}</span>)}{index < highlighted.tokens.length - 1 ? '\n' : ''}</span>) : text}</code></pre></div>;
+  return <div className="response-code"><div className="response-code-heading"><span>{language || 'Code'}</span><Button quiet onClick={() => void copy()}>{copyState}</Button></div><pre><code>{highlighted?.text === text ? highlighted.tokens.map((line, index) => <span key={index}>{line.map((token, part) => <span key={part} className={tokenClasses[token.color?.toLowerCase() || ''] || 'code-primary'}>{token.content}</span>)}{index < highlighted.tokens.length - 1 ? '\n' : ''}</span>) : text}</code></pre></div>;
 }
 
 export default function ResponseView({ response, onRetry }: { response: ResponseState; onRetry?: () => void }) {
