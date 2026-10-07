@@ -358,6 +358,8 @@ pub struct Settings {
     pub screenshot_shortcut: String,
     #[serde(default = "default_image_shortcut")]
     pub image_shortcut: String,
+    #[serde(default = "default_window_shortcuts")]
+    pub window_shortcuts: [String; 8],
     pub launch_on_login: bool,
     #[serde(default)]
     pub include_microphone: bool,
@@ -376,6 +378,31 @@ fn default_image_shortcut() -> String {
     "Ctrl+Shift+X".into()
 }
 
+pub const WINDOW_ACTIONS: [&str; 8] = [
+    "Move left",
+    "Move right",
+    "Move up",
+    "Move down",
+    "Wider",
+    "Narrower",
+    "Taller",
+    "Shorter",
+];
+
+fn default_window_shortcuts() -> [String; 8] {
+    [
+        "Ctrl+Alt+Left",
+        "Ctrl+Alt+Right",
+        "Ctrl+Alt+Up",
+        "Ctrl+Alt+Down",
+        "Ctrl+Alt+Shift+Right",
+        "Ctrl+Alt+Shift+Left",
+        "Ctrl+Alt+Shift+Down",
+        "Ctrl+Alt+Shift+Up",
+    ]
+    .map(String::from)
+}
+
 fn default_auto_send_delay() -> u32 {
     2000
 }
@@ -391,6 +418,7 @@ impl Default for Settings {
             new_chat_shortcut: default_new_chat_shortcut(),
             screenshot_shortcut: default_screenshot_shortcut(),
             image_shortcut: default_image_shortcut(),
+            window_shortcuts: default_window_shortcuts(),
             launch_on_login: false,
             include_microphone: false,
             auto_send_delay_ms: default_auto_send_delay(),
@@ -415,7 +443,10 @@ impl Settings {
         for (name, key) in [
             ("Screenshot", &self.screenshot_shortcut),
             ("Clipboard image", &self.image_shortcut),
-        ] {
+        ]
+        .into_iter()
+        .chain(WINDOW_ACTIONS.into_iter().zip(&self.window_shortcuts))
+        {
             if key.trim().is_empty() || key.chars().count() > 100 {
                 bail!("{name} shortcut must be between 1 and 100 characters");
             }
@@ -981,6 +1012,17 @@ impl Store {
     }
 
     /// Only fully delivered rows may disappear from the visible speech buffer.
+    pub fn delivered_speech_through(&self, meeting_id: i64) -> Result<Option<i64>> {
+        validate_id(meeting_id, "meeting")?;
+        Ok(self.conn.query_row(
+            "SELECT MAX(cursor_after - CASE WHEN cursor_after_offset > 0 THEN 1 ELSE 0 END)
+             FROM message_requests
+             WHERE meeting_id = ?1 AND kind = 'transcript' AND status IN ('completed', 'partial')",
+            [meeting_id],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn request_speech_through(&self, request_id: i64) -> Result<Option<i64>> {
         validate_id(request_id, "request")?;
         Ok(self.conn.query_row(

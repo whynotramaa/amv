@@ -10,6 +10,7 @@ import './styles/app.css';
 
 const idleMeeting: MeetingState = { status: 'idle', meetingId: null, title: '', startedAt: null, transcript: [], error: null };
 const opacityKey = 'harness-background-opacity';
+const windowActions = ['Move window left', 'Move window right', 'Move window up', 'Move window down', 'Wider window', 'Narrower window', 'Taller window', 'Shorter window'];
 const clampOpacity = (value: number) => Math.min(1, Math.max(0.15, Math.round(value * 100) / 100));
 function savedOpacity() {
   try { const value = Number(localStorage.getItem(opacityKey)); return value ? clampOpacity(value) : 0.85; } catch { return 0.85; }
@@ -30,7 +31,6 @@ export default function App() {
   const [captureConsent, setCaptureConsent] = useState(false);
   const [prefs, setPrefs] = useState(defaults);
   const [response, setResponse] = useState<ResponseState | null>(null);
-  const [sentThrough, setSentThrough] = useState(0);
   const [opacity, setOpacity] = useState(savedOpacity);
   const meetingVersion = useRef(0);
   const responseGeneration = useRef(0);
@@ -43,10 +43,10 @@ export default function App() {
   const responseBusy = response?.status === 'preparing' || response?.status === 'streaming';
   const listening = meeting.status === 'active' || meeting.status === 'starting' || meeting.status === 'stopping';
   const retainedMeetingId = Number.isInteger(meeting.meetingId) && meeting.meetingId != null ? meeting.meetingId : null;
-  const unsent = meeting.transcript.filter(line => line.id > sentThrough);
+  const unsent = meeting.transcript;
   const canAsk = desktop && state.inferenceAvailable && !responseBusy && !commandBusy;
   const commitMeeting = (next: MeetingState) => {
-    if (next.meetingId !== meetingRef.current.meetingId) { setQuestion(''); setSentThrough(0); responseGeneration.current++; responseRequestId.current = 0; responseRef.current = null; setResponse(null); }
+    if (next.meetingId !== meetingRef.current.meetingId) { setQuestion(''); responseGeneration.current++; responseRequestId.current = 0; responseRef.current = null; setResponse(null); }
     meetingRef.current = next;
     setMeeting(next);
   };
@@ -58,7 +58,6 @@ export default function App() {
       if (after < before || (after === before && (next.answer.length < previous.answer.length ||
         (!['preparing', 'streaming'].includes(previous.status) && ['preparing', 'streaming'].includes(next.status))))) return;
     }
-    if (next.status === 'completed' && next.speechThrough != null) setSentThrough(old => Math.max(old, next.speechThrough!));
     responseRequestId.current = next.requestId;
     responseRef.current = next;
     setResponse(next);
@@ -235,6 +234,7 @@ export default function App() {
             <div className="field"><label htmlFor="screenshot-shortcut">Screenshot → text</label><input id="screenshot-shortcut" className="input" maxLength={100} value={draft.screenshotShortcut} onChange={event => update('screenshotShortcut', event.target.value)} required spellCheck={false} /><small>Recognizes text on the display under your pointer and sends it to this chat.</small></div>
             <div className="field"><label htmlFor="image-shortcut">Send clipboard image</label><input id="image-shortcut" className="input" maxLength={100} value={draft.imageShortcut} onChange={event => update('imageShortcut', event.target.value)} required spellCheck={false} /><small>Copy an image first (Win+Shift+S). Sends immediately; requires an image-capable model.</small></div>
             <div className="field"><label htmlFor="new-chat-shortcut">New chat</label><input id="new-chat-shortcut" className="input" maxLength={100} value={draft.newChatShortcut} onChange={event => update('newChatShortcut', event.target.value)} required spellCheck={false} /></div>
+            {windowActions.map((label, index) => <div className="field" key={label}><label htmlFor={`window-shortcut-${index}`}>{label}</label><input id={`window-shortcut-${index}`} className="input" maxLength={100} value={draft.windowShortcuts[index]} onChange={event => update('windowShortcuts', draft.windowShortcuts.map((key, i) => i === index ? event.target.value : key))} required spellCheck={false} /></div>)}
           </div>
           <label className="checkbox"><input type="checkbox" checked={draft.launchOnLogin} onChange={event => update('launchOnLogin', event.target.checked)} />Launch when I sign in to Windows</label>
           {notice && <p className={`notice${notice.error ? ' error' : ''}`} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}

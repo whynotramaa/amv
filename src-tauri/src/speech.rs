@@ -7,7 +7,7 @@ use sherpa_onnx::{
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::thread::{self, JoinHandle};
@@ -35,7 +35,7 @@ impl Default for SpeechConfig {
             pre_roll: Duration::from_millis(160),
             silence: Duration::from_millis(600),
             min_speech: Duration::from_millis(100),
-            max_utterance: Duration::from_secs(15),
+            max_utterance: Duration::from_secs(10),
         }
     }
 }
@@ -61,6 +61,9 @@ pub enum SpeechEvent {
         source: Option<AudioSource>,
         message: String,
     },
+    Flushed {
+        ticket: u64,
+    },
 }
 
 pub struct SpeechSession {
@@ -70,7 +73,7 @@ pub struct SpeechSession {
 }
 
 impl SpeechSession {
-    pub fn start(config: SpeechConfig) -> Result<Self, String> {
+    pub fn start(config: SpeechConfig, flush: Arc<AtomicU64>) -> Result<Self, String> {
         validate_config(&config)?;
         let context = load_recognizer(&config.model_path)?;
         let capture = CaptureSession::start(config.selected_mic_id.as_deref())?;
@@ -79,7 +82,7 @@ impl SpeechSession {
         let stop_for_worker = Arc::clone(&stop);
         let worker = thread::Builder::new()
             .name("speech-worker".to_owned())
-            .spawn(move || speech_worker(context, capture, config, tx, stop_for_worker))
+            .spawn(move || speech_worker(context, capture, config, tx, stop_for_worker, flush))
             .map_err(|error| error.to_string())?;
         Ok(Self {
             events,
@@ -270,21 +273,30 @@ struct Utterance {
     samples: Vec<f32>,
 }
 
+enum Job {
+    Decode(Utterance, u64),
+    Mark(u64),
+}
+
 fn speech_worker(
     context: OfflineRecognizer,
     capture: CaptureSession,
     config: SpeechConfig,
     tx: SyncSender<SpeechEvent>,
     stop: Arc<AtomicBool>,
+    flush: Arc<AtomicU64>,
 ) {
     // Segmentation continues while one shared model decodes bounded utterances.
-    let (decode_tx, decode_rx) = mpsc::sync_channel::<(Utterance, u64)>(4);
+    let (decode_tx, decode_rx) = mpsc::sync_channel::<Job>(4);
     let output = tx.clone();
     let decoder = match thread::Builder::new()
         .name("speech-decoder".into())
         .spawn(move || {
-            while let Ok((utterance, id)) = decode_rx.recv() {
-                transcribe(&context, utterance, id, &output);
+            while let Ok(job) = decode_rx.recv() {
+                match job {
+                    Job::Decode(utterance, id) => transcribe(&context, utterance, id, &output),
+                    Job::Mark(ticket) => send_blocking(&output, SpeechEvent::Flushed { ticket }),
+                }
             }
         }) {
         Ok(worker) => worker,
@@ -310,7 +322,19 @@ fn speech_worker(
     let mut sequences = [None, None];
     let mut capture_errors = [0, 0];
     let mut next_id = 1u64;
+    let mut flushed = flush.load(Ordering::Acquire);
     while !stop.load(Ordering::Acquire) {
+        let wanted = flush.load(Ordering::Acquire);
+        if wanted != flushed {
+            for segmenter in &mut segmenters {
+                if let Some(utterance) = segmenter.flush() {
+                    queue_utterance(&decode_tx, utterance, next_id, &tx);
+                    next_id += 1;
+                }
+            }
+            let _ = decode_tx.send(Job::Mark(wanted));
+            flushed = wanted;
+        }
         for (source, metrics) in capture.metrics() {
             let index = match source {
                 AudioSource::System => 0,
@@ -415,7 +439,7 @@ fn speech_worker(
     }
     for segmenter in &mut segmenters {
         if let Some(utterance) = segmenter.flush() {
-            let _ = decode_tx.send((utterance, next_id));
+            let _ = decode_tx.send(Job::Decode(utterance, next_id));
             next_id += 1;
         }
     }
@@ -433,13 +457,13 @@ fn speech_worker(
 }
 
 fn queue_utterance(
-    tx: &SyncSender<(Utterance, u64)>,
+    tx: &SyncSender<Job>,
     utterance: Utterance,
     id: u64,
     output: &SyncSender<SpeechEvent>,
 ) {
     let source = utterance.source;
-    if tx.try_send((utterance, id)).is_err() {
+    if tx.try_send(Job::Decode(utterance, id)).is_err() {
         send_blocking(output, SpeechEvent::Error { id, source: Some(source), message: "Transcription couldn't keep up; some audio was dropped. Your finalized notes are preserved.".into() });
     }
 }

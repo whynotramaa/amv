@@ -451,10 +451,17 @@ fn restore_saved_meeting(
     ) {
         return Err("This meeting has not finished".into());
     }
-    let (rows, _) = core
+    let (mut rows, _) = core
         .store
         .recent_transcript(meeting_id, 0, true)
         .map_err(|_| "Couldn't read saved transcript")?;
+    if let Some(delivered) = core
+        .store
+        .delivered_speech_through(meeting_id)
+        .map_err(|_| "Couldn't read speech progress")?
+    {
+        rows.retain(|row| row.id > delivered);
+    }
     let cutoff = core
         .store
         .latest_finalized_id(meeting_id)
@@ -497,12 +504,28 @@ fn ask_meeting(
     )
 }
 
+const SPEECH_FLUSH_WAIT: Duration = Duration::from_secs(3);
+
 #[tauri::command]
-fn send_meeting_speech(
+async fn send_meeting_speech(
     app: tauri::AppHandle,
     meeting_id: i64,
 ) -> Result<Option<DispatchState>, String> {
-    dispatch_response(&app, meeting_id, None, false, false, None)
+    let handle = app
+        .state::<Mutex<Core>>()
+        .lock()
+        .map_err(|_| "Meeting state is unavailable")?
+        .meeting
+        .lock()
+        .map_err(|_| "Meeting state is unavailable")?
+        .handle();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (id, cutoff) = handle.flush_speech(SPEECH_FLUSH_WAIT)?;
+        let cutoff = cutoff.filter(|_| id == Some(meeting_id));
+        dispatch_response(&app, meeting_id, None, false, false, cutoff)
+    })
+    .await
+    .map_err(|_| "Speech sending stopped unexpectedly".to_string())?
 }
 
 fn send_visual(app: &tauri::AppHandle, clipboard: bool) -> Result<(), String> {
@@ -690,11 +713,13 @@ fn dispatch_response(
         };
     }
     // Only the current or just-completed meeting can be sent by these controls.
-    let current = core
-        .meeting
-        .lock()
-        .map_err(|_| "Meeting state is unavailable")?
-        .state()?;
+    let (current, meeting_handle) = {
+        let meeting = core
+            .meeting
+            .lock()
+            .map_err(|_| "Meeting state is unavailable")?;
+        (meeting.state()?, meeting.handle())
+    };
     if current.meeting_id != Some(meeting_id) {
         return Err("The selected meeting changed".into());
     }
@@ -941,6 +966,16 @@ fn dispatch_response(
             .state
             .as_ref()
             .is_some_and(|state| state.status == DispatchStatus::Completed);
+        let delivered = controller
+            .state
+            .as_ref()
+            .filter(|state| {
+                matches!(
+                    state.status,
+                    DispatchStatus::Completed | DispatchStatus::Partial
+                )
+            })
+            .and_then(|state| state.speech_through);
         if !succeeded {
             controller.manual_through = None;
             if controller.auto_meeting == Some(meeting_id) {
@@ -961,6 +996,9 @@ fn dispatch_response(
             None
         };
         drop(controller);
+        if let Some(through) = delivered {
+            meeting_handle.drop_delivered(&app, meeting_id, through);
+        }
         if let Some((id, through)) = manual {
             tauri::async_runtime::spawn_blocking(move || {
                 if let Err(error) = dispatch_response(&app, id, None, false, false, Some(through)) {
@@ -2592,7 +2630,7 @@ fn get_app_state(state: tauri::State<'_, Mutex<Core>>) -> Result<AppState, Strin
     })
 }
 
-fn shortcuts(settings: &Settings) -> Result<[Shortcut; 5], String> {
+fn shortcuts(settings: &Settings) -> Result<Vec<Shortcut>, String> {
     let overlay = Shortcut::from_str(settings.overlay_shortcut.trim())
         .map_err(|_| "The assistant shortcut is invalid. Try Ctrl+Space.".to_string())?;
     let send = Shortcut::from_str(settings.send_shortcut.trim())
@@ -2603,7 +2641,16 @@ fn shortcuts(settings: &Settings) -> Result<[Shortcut; 5], String> {
         .map_err(|_| "The screenshot shortcut is invalid. Try Ctrl+Shift+O.".to_string())?;
     let image = Shortcut::from_str(settings.image_shortcut.trim())
         .map_err(|_| "The clipboard image shortcut is invalid. Try Ctrl+Shift+X.".to_string())?;
-    let keys = [overlay, send, new_chat, screenshot, image];
+    let mut keys = vec![overlay, send, new_chat, screenshot, image];
+    for (name, key) in crate::store::WINDOW_ACTIONS
+        .iter()
+        .zip(&settings.window_shortcuts)
+    {
+        keys.push(
+            Shortcut::from_str(key.trim())
+                .map_err(|_| format!("The {name} shortcut is invalid. Try Ctrl+Alt+Left."))?,
+        );
+    }
     if keys
         .iter()
         .enumerate()
@@ -2758,6 +2805,48 @@ fn start_chat(app: tauri::AppHandle) -> Result<crate::meeting::MeetingState, Str
     restore_saved_meeting(app, id)
 }
 
+fn nudge_overlay(app: &tauri::AppHandle, action: usize) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window("overlay") else {
+        return Ok(());
+    };
+    let scale = window.scale_factor()?;
+    let px = |value: f64| (value * scale).round() as i32;
+    let step = px(40.0);
+    let (dx, dy, dw, dh) = [
+        (-1, 0, 0, 0),
+        (1, 0, 0, 0),
+        (0, -1, 0, 0),
+        (0, 1, 0, 0),
+        (0, 0, 1, 0),
+        (0, 0, -1, 0),
+        (0, 0, 0, 1),
+        (0, 0, 0, -1),
+    ][action];
+    if dw != 0 || dh != 0 {
+        let size = window.inner_size()?;
+        let width = (size.width as i32 + dw * step).clamp(px(420.0), px(720.0));
+        let height = (size.height as i32 + dh * step).clamp(px(360.0), px(900.0));
+        window.set_size(PhysicalSize::new(width as u32, height as u32))?;
+    }
+    let position = window.outer_position()?;
+    let size = window.outer_size()?;
+    let (mut x, mut y) = (position.x + dx * step, position.y + dy * step);
+    if let Some(monitor) = window.current_monitor()? {
+        let area = monitor.work_area();
+        (x, y) = crate::window::clamp_position(
+            (x, y),
+            (size.width, size.height),
+            (
+                area.position.x,
+                area.position.y,
+                area.size.width,
+                area.size.height,
+            ),
+        );
+    }
+    window.set_position(PhysicalPosition::new(x, y))
+}
+
 fn show_overlay(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("overlay") {
         let position = window.outer_position()?;
@@ -2894,6 +2983,10 @@ pub fn run() {
                                 });
                             } else if shortcut == &pair[0] {
                                 report_window_error(toggle_overlay(app));
+                            } else if let Some(action) =
+                                pair[5..].iter().position(|key| key == shortcut)
+                            {
+                                report_window_error(nudge_overlay(app, action));
                             } else if shortcut == &pair[3] || shortcut == &pair[4] {
                                 let permit = match HOTKEY_PREPARATION.try_acquire() {
                                     Ok(permit) => permit,
@@ -2933,25 +3026,32 @@ pub fn run() {
                                     let meeting = core.meeting.try_lock().map_err(|_| {
                                         "Meeting state is busy. Press the shortcut again."
                                     })?;
-                                    let (id, cutoff) = meeting.speech_cutoff()?;
-                                    let id = id.ok_or("Start a meeting before sending speech.")?;
-                                    let cutoff = cutoff.ok_or("No new speech to send.")?;
-                                    Ok((id, cutoff, track_work(&core)))
+                                    Ok((meeting.handle(), track_work(&core)))
                                 })();
                                 match captured {
-                                    Ok((id, cutoff, work)) => {
+                                    Ok((handle, work)) => {
                                         let app = app.clone();
                                         tauri::async_runtime::spawn_blocking(move || {
                                             let _work = work;
                                             let _permit = permit;
-                                            match dispatch_response(
-                                                &app,
-                                                id,
-                                                None,
-                                                false,
-                                                false,
-                                                Some(cutoff),
-                                            ) {
+                                            let sent = handle
+                                                .flush_speech(SPEECH_FLUSH_WAIT)
+                                                .and_then(|(id, cutoff)| {
+                                                    let id = id.ok_or(
+                                                        "Start a meeting before sending speech.",
+                                                    )?;
+                                                    let cutoff =
+                                                        cutoff.ok_or("No new speech to send.")?;
+                                                    dispatch_response(
+                                                        &app,
+                                                        id,
+                                                        None,
+                                                        false,
+                                                        false,
+                                                        Some(cutoff),
+                                                    )
+                                                });
+                                            match sent {
                                                 Ok(Some(_)) => {}
                                                 Ok(None) => {
                                                     let _ = app.emit(

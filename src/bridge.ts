@@ -10,6 +10,7 @@ export type Settings = {
   newChatShortcut: string;
   screenshotShortcut: string;
   imageShortcut: string;
+  windowShortcuts: string[];
   launchOnLogin: boolean;
   includeMicrophone: boolean;
   autoSendDelayMs: number;
@@ -36,7 +37,8 @@ export type MeetingState = {
 export const desktop = isTauri();
 export const defaults: Settings = {
   sendMode: 'on_hotkey', responseMode: 'suggested_answers', customInstruction: '',
-  overlayShortcut: 'Ctrl+Space', sendShortcut: 'Ctrl+Shift+Enter', newChatShortcut: 'Ctrl+Alt+N', screenshotShortcut: 'Ctrl+Shift+O', imageShortcut: 'Ctrl+Shift+X', launchOnLogin: false,
+  overlayShortcut: 'Ctrl+Space', sendShortcut: 'Ctrl+Shift+Enter', newChatShortcut: 'Ctrl+Alt+N', screenshotShortcut: 'Ctrl+Shift+O', imageShortcut: 'Ctrl+Shift+X',
+  windowShortcuts: ['Ctrl+Alt+Left', 'Ctrl+Alt+Right', 'Ctrl+Alt+Up', 'Ctrl+Alt+Down', 'Ctrl+Alt+Shift+Right', 'Ctrl+Alt+Shift+Left', 'Ctrl+Alt+Shift+Down', 'Ctrl+Alt+Shift+Up'], launchOnLogin: false,
   includeMicrophone: false, autoSendDelayMs: 2000,
 };
 const previewKey = 'harness-interface-preview-settings';

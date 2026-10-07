@@ -2,8 +2,9 @@ use crate::speech::{SpeechConfig, SpeechEvent, SpeechSession};
 use crate::store::{Meeting, MeetingStatus, Settings, Store, TranscriptSource};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
@@ -48,8 +49,50 @@ impl Default for MeetingState {
     }
 }
 
+#[derive(Default)]
 struct Shared {
     state: Mutex<MeetingState>,
+    flush: Arc<AtomicU64>,
+    flushed: Mutex<u64>,
+    flushed_changed: Condvar,
+}
+
+#[derive(Clone)]
+pub struct MeetingHandle(Arc<Shared>);
+
+impl MeetingHandle {
+    pub fn flush_speech(&self, timeout: Duration) -> Result<(Option<i64>, Option<i64>), String> {
+        let active = self
+            .0
+            .state
+            .lock()
+            .map(|state| state.status == "active")
+            .map_err(|_| "Meeting state is unavailable")?;
+        if active {
+            let ticket = self.0.flush.fetch_add(1, Ordering::AcqRel) + 1;
+            if let Ok(done) = self.0.flushed.lock() {
+                let _ = self
+                    .0
+                    .flushed_changed
+                    .wait_timeout_while(done, timeout, |done| *done < ticket);
+            }
+        }
+        self.0
+            .state
+            .lock()
+            .map(|state| (state.meeting_id, state.finalized_speech_through))
+            .map_err(|_| "Meeting state is unavailable".into())
+    }
+
+    pub fn drop_delivered(&self, app: &AppHandle, meeting_id: i64, through: i64) {
+        if let Ok(mut state) = self.0.state.lock() {
+            if state.meeting_id != Some(meeting_id) {
+                return;
+            }
+            state.transcript.retain(|row| row.id > through);
+        }
+        emit_state(app, &self.0);
+    }
 }
 
 pub struct MeetingController {
@@ -68,13 +111,15 @@ impl Default for MeetingController {
 impl MeetingController {
     pub fn new() -> Self {
         Self {
-            shared: Arc::new(Shared {
-                state: Mutex::new(MeetingState::default()),
-            }),
+            shared: Arc::default(),
             worker: None,
             stop: None,
             worker_meeting: None,
         }
+    }
+
+    pub fn handle(&self) -> MeetingHandle {
+        MeetingHandle(Arc::clone(&self.shared))
     }
 
     pub fn state(&self) -> Result<MeetingState, String> {
@@ -83,15 +128,6 @@ impl MeetingController {
             .lock()
             .map(|state| state.clone())
             .map_err(|_| "Meeting state is unavailable".into())
-    }
-
-    /// The hotkey reads this committed high-water mark without cloning the transcript or waiting.
-    pub fn speech_cutoff(&self) -> Result<(Option<i64>, Option<i64>), String> {
-        self.shared
-            .state
-            .try_lock()
-            .map(|state| (state.meeting_id, state.finalized_speech_through))
-            .map_err(|_| "Meeting state is busy. Press the shortcut again.".into())
     }
 
     pub fn restore(
@@ -368,7 +404,7 @@ fn run_worker(
         selected_mic_id,
         ..SpeechConfig::default()
     };
-    let session = match SpeechSession::start(config) {
+    let session = match SpeechSession::start(config, Arc::clone(&shared.flush)) {
         Ok(session) => session,
         Err(error) => {
             let _ = store.transition_meeting(
@@ -547,6 +583,12 @@ fn process_event(
             return Err(());
         }
         SpeechEvent::Partial { .. } => {}
+        SpeechEvent::Flushed { ticket } => {
+            if let Ok(mut done) = shared.flushed.lock() {
+                *done = ticket;
+            }
+            shared.flushed_changed.notify_all();
+        }
     }
     Ok(())
 }
@@ -670,13 +712,12 @@ mod tests {
                     text: "private mic".into(),
                 },
             );
-            assert!(controller.speech_cutoff().is_err()); // A hotkey never waits on this lock.
             assert!(serde_json::to_value(&*state)
                 .unwrap()
                 .get("finalizedSpeechThrough")
                 .is_none());
         }
-        let captured = controller.speech_cutoff().unwrap();
+        let captured = controller.handle().flush_speech(Duration::ZERO).unwrap();
         assert_eq!(captured, (Some(1), Some(2000)));
         record_finalized_row(
             &mut controller.shared.state.lock().unwrap(),
@@ -688,7 +729,10 @@ mod tests {
             },
         );
         assert_eq!(captured.1, Some(2000));
-        assert_eq!(controller.speech_cutoff().unwrap().1, Some(2001));
+        assert_eq!(
+            controller.handle().flush_speech(Duration::ZERO).unwrap().1,
+            Some(2001)
+        );
     }
 
     #[test]
