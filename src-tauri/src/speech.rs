@@ -16,6 +16,7 @@ use webrtc_vad::{SampleRate, Vad, VadMode};
 
 pub const FRAME_SAMPLES: usize = 320;
 pub const MAX_OUTPUTS: usize = 32;
+const DECODE_QUEUE: usize = 16;
 
 #[derive(Clone, Debug)]
 pub struct SpeechConfig {
@@ -63,6 +64,10 @@ pub enum SpeechEvent {
     },
     Flushed {
         ticket: u64,
+    },
+    Gap {
+        source: AudioSource,
+        message: String,
     },
 }
 
@@ -287,7 +292,7 @@ fn speech_worker(
     flush: Arc<AtomicU64>,
 ) {
     // Segmentation continues while one shared model decodes bounded utterances.
-    let (decode_tx, decode_rx) = mpsc::sync_channel::<Job>(4);
+    let (decode_tx, decode_rx) = mpsc::sync_channel::<Job>(DECODE_QUEUE);
     let output = tx.clone();
     let decoder = match thread::Builder::new()
         .name("speech-decoder".into())
@@ -367,13 +372,11 @@ fn speech_worker(
                 remainders[index].clear();
                 send_blocking(
                     &tx,
-                    SpeechEvent::Error {
-                        id: next_id,
-                        source: Some(frame.source),
+                    SpeechEvent::Gap {
+                        source: frame.source,
                         message: "Audio frames were dropped; this transcript has a gap.".into(),
                     },
                 );
-                next_id += 1;
             }
             sequences[index] = Some(frame.sequence);
             let mut offset = 0;
@@ -463,9 +466,19 @@ fn queue_utterance(
     output: &SyncSender<SpeechEvent>,
 ) {
     let source = utterance.source;
-    if tx.try_send(Job::Decode(utterance, id)).is_err() {
-        send_blocking(output, SpeechEvent::Error { id, source: Some(source), message: "Transcription couldn't keep up; some audio was dropped. Your finalized notes are preserved.".into() });
-    }
+    let event = match tx.try_send(Job::Decode(utterance, id)) {
+        Ok(()) => return,
+        Err(mpsc::TrySendError::Full(_)) => SpeechEvent::Gap {
+            source,
+            message: "Transcription couldn't keep up; some audio was dropped. Your finalized notes are preserved.".into(),
+        },
+        Err(mpsc::TrySendError::Disconnected(_)) => SpeechEvent::Error {
+            id,
+            source: Some(source),
+            message: "Local transcription stopped unexpectedly".into(),
+        },
+    };
+    send_blocking(output, event);
 }
 
 pub fn load_recognizer(dir: &Path) -> Result<OfflineRecognizer, String> {
@@ -527,9 +540,8 @@ fn transcribe(
         Ok(_) => {}
         Err(message) => send_blocking(
             tx,
-            SpeechEvent::Error {
-                id,
-                source: Some(utterance.source),
+            SpeechEvent::Gap {
+                source: utterance.source,
                 message,
             },
         ),

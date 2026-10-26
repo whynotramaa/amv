@@ -360,6 +360,10 @@ pub struct Settings {
     pub image_shortcut: String,
     #[serde(default = "default_window_shortcuts")]
     pub window_shortcuts: [String; 8],
+    #[serde(default = "default_listen_shortcut")]
+    pub listen_shortcut: String,
+    #[serde(default = "default_history_shortcuts")]
+    pub history_shortcuts: [String; 2],
     pub launch_on_login: bool,
     #[serde(default)]
     pub include_microphone: bool,
@@ -403,6 +407,14 @@ fn default_window_shortcuts() -> [String; 8] {
     .map(String::from)
 }
 
+fn default_listen_shortcut() -> String {
+    "Ctrl+Alt+L".into()
+}
+
+fn default_history_shortcuts() -> [String; 2] {
+    ["Ctrl+Shift+Up", "Ctrl+Shift+Down"].map(String::from)
+}
+
 fn default_auto_send_delay() -> u32 {
     2000
 }
@@ -419,6 +431,8 @@ impl Default for Settings {
             screenshot_shortcut: default_screenshot_shortcut(),
             image_shortcut: default_image_shortcut(),
             window_shortcuts: default_window_shortcuts(),
+            listen_shortcut: default_listen_shortcut(),
+            history_shortcuts: default_history_shortcuts(),
             launch_on_login: false,
             include_microphone: false,
             auto_send_delay_ms: default_auto_send_delay(),
@@ -443,6 +457,9 @@ impl Settings {
         for (name, key) in [
             ("Screenshot", &self.screenshot_shortcut),
             ("Clipboard image", &self.image_shortcut),
+            ("Listening", &self.listen_shortcut),
+            ("Earlier message", &self.history_shortcuts[0]),
+            ("Later message", &self.history_shortcuts[1]),
         ]
         .into_iter()
         .chain(WINDOW_ACTIONS.into_iter().zip(&self.window_shortcuts))
@@ -492,6 +509,7 @@ impl Store {
             .context("set database busy timeout")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enable WAL journal")?;
+        conn.set_transaction_behavior(TransactionBehavior::Immediate);
 
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -1611,6 +1629,15 @@ impl Store {
         Ok(())
     }
 
+    pub fn discard_pending_request(&self, request_id: i64) -> Result<bool> {
+        validate_id(request_id, "request")?;
+        Ok(self.conn.execute(
+            "DELETE FROM message_requests
+             WHERE id = ?1 AND status = 'pending' AND COALESCE(assistant_text, '') = ''",
+            [request_id],
+        )? == 1)
+    }
+
     pub fn meeting_pending_request(&self, meeting_id: i64) -> Result<Option<PendingRequest>> {
         validate_id(meeting_id, "meeting")?;
         read_meeting(&self.conn, meeting_id)?;
@@ -1629,6 +1656,20 @@ impl Store {
             bail!("request has persisted output");
         }
         Ok(())
+    }
+
+    pub fn meeting_turns(&self, meeting_id: i64) -> Result<Vec<(i64, String, String)>> {
+        validate_id(meeting_id, "meeting")?;
+        let mut statement = self.conn.prepare(
+            "SELECT id, user_text, COALESCE(assistant_text, '') FROM message_requests
+             WHERE meeting_id = ?1 AND status IN ('completed', 'partial') ORDER BY id",
+        )?;
+        let turns = statement
+            .query_map([meeting_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(turns)
     }
 
     pub fn completed_history(&self, meeting_id: i64) -> Result<MessageHistory> {

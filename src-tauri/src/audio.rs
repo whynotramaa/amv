@@ -117,7 +117,7 @@ mod windows {
     };
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
-    const QUEUE_CAPACITY: usize = 8;
+    const QUEUE_CAPACITY: usize = 256;
     const TARGET_RATE: u32 = 16_000;
     const MAX_PACKET_FRAMES: usize = 16_000;
 

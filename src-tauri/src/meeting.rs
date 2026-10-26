@@ -558,6 +558,7 @@ fn process_event(
                     &text,
                 )
                 .map_err(|error| {
+                    log::error!("component=meeting action=transcript_save_failed error={error}");
                     fail(app, shared, format!("Couldn't save transcript: {error}"));
                 })?;
             let source = match source_db {
@@ -579,8 +580,13 @@ fn process_event(
             crate::desktop::speech_finalized(app, meeting_id);
         }
         SpeechEvent::Error { message, .. } => {
+            log::error!("component=speech action=failed");
             fail(app, shared, message);
             return Err(());
+        }
+        SpeechEvent::Gap { source, message } => {
+            log::warn!("component=speech action=gap source={source:?}");
+            let _ = app.emit("app-notice", message);
         }
         SpeechEvent::Partial { .. } => {}
         SpeechEvent::Flushed { ticket } => {
