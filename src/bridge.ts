@@ -11,6 +11,8 @@ export type Settings = {
   screenshotShortcut: string;
   imageShortcut: string;
   windowShortcuts: string[];
+  listenShortcut: string;
+  historyShortcuts: string[];
   launchOnLogin: boolean;
   includeMicrophone: boolean;
   autoSendDelayMs: number;
@@ -38,7 +40,7 @@ export const desktop = isTauri();
 export const defaults: Settings = {
   sendMode: 'on_hotkey', responseMode: 'suggested_answers', customInstruction: '',
   overlayShortcut: 'Ctrl+Space', sendShortcut: 'Ctrl+Shift+Enter', newChatShortcut: 'Ctrl+Alt+N', screenshotShortcut: 'Ctrl+Shift+O', imageShortcut: 'Ctrl+Shift+X',
-  windowShortcuts: ['Ctrl+Alt+Left', 'Ctrl+Alt+Right', 'Ctrl+Alt+Up', 'Ctrl+Alt+Down', 'Ctrl+Alt+Shift+Right', 'Ctrl+Alt+Shift+Left', 'Ctrl+Alt+Shift+Down', 'Ctrl+Alt+Shift+Up'], launchOnLogin: false,
+  windowShortcuts: ['Ctrl+Alt+Left', 'Ctrl+Alt+Right', 'Ctrl+Alt+Up', 'Ctrl+Alt+Down', 'Ctrl+Alt+Shift+Right', 'Ctrl+Alt+Shift+Left', 'Ctrl+Alt+Shift+Down', 'Ctrl+Alt+Shift+Up'], listenShortcut: 'Ctrl+Alt+L', historyShortcuts: ['Ctrl+Shift+Up', 'Ctrl+Shift+Down'], launchOnLogin: false,
   includeMicrophone: false, autoSendDelayMs: 2000,
 };
 const previewKey = 'harness-interface-preview-settings';
@@ -129,7 +131,13 @@ export type ResponseState = {
 };
 export const getResponseState = (): Promise<ResponseState | null> => desktop ? invoke('get_response_state') : Promise.resolve(null);
 export const askMeeting = (meetingId: number, text: string, includeMicrophone: boolean): Promise<ResponseState | null> => invoke('ask_meeting', { meetingId, text, includeMicrophone });
-export const sendMeetingSpeech = (meetingId: number): Promise<ResponseState | null> => invoke('send_meeting_speech', { meetingId });
+export const sendMeetingSpeech = (meetingId: number, retry = false): Promise<ResponseState | null> => invoke('send_meeting_speech', { meetingId, retry });
+export type Turn = { requestId: number; userText: string; answer: string };
+export const meetingTurns = (meetingId: number): Promise<Turn[]> => desktop ? invoke('meeting_turns', { meetingId }) : Promise.resolve([]);
+export async function toggleListening(): Promise<MeetingState> {
+  if (!desktop) throw new Error('Meeting capture is unavailable in the browser preview.');
+  return invoke<MeetingState>('toggle_listening');
+}
 export const cancelResponse = (): Promise<void> => invoke('cancel_response');
 
 export const openExternal = (url: string): Promise<void> => desktop ? invoke('open_external', { url }) : Promise.resolve().then(() => { window.open(url, '_blank', 'noopener,noreferrer'); });

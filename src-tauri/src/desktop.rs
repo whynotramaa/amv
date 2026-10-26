@@ -501,15 +501,19 @@ fn ask_meeting(
         include_microphone,
         false,
         None,
+        false,
     )
 }
 
 const SPEECH_FLUSH_WAIT: Duration = Duration::from_secs(3);
+const VISUAL_WAIT: Duration = Duration::from_secs(120);
+const RESPONSE_RUNNING: &str = "A response is already running. Wait or stop it first.";
 
 #[tauri::command]
 async fn send_meeting_speech(
     app: tauri::AppHandle,
     meeting_id: i64,
+    retry: Option<bool>,
 ) -> Result<Option<DispatchState>, String> {
     let handle = app
         .state::<Mutex<Core>>()
@@ -522,7 +526,15 @@ async fn send_meeting_speech(
     tauri::async_runtime::spawn_blocking(move || {
         let (id, cutoff) = handle.flush_speech(SPEECH_FLUSH_WAIT)?;
         let cutoff = cutoff.filter(|_| id == Some(meeting_id));
-        dispatch_response(&app, meeting_id, None, false, false, cutoff)
+        dispatch_response(
+            &app,
+            meeting_id,
+            None,
+            false,
+            false,
+            cutoff,
+            retry.unwrap_or(false),
+        )
     })
     .await
     .map_err(|_| "Speech sending stopped unexpectedly".to_string())?
@@ -535,14 +547,13 @@ fn send_visual(app: &tauri::AppHandle, clipboard: bool) -> Result<(), String> {
         if !inference_available(&core) {
             return Err("Connect a provider and select a model before sending.".into());
         }
-        let response = core
+        if core
             .response
             .lock()
-            .map_err(|_| "Response state is unavailable")?;
-        if response.running || response.shutting_down {
-            return Err(
-                "Wait for the current response before sending an image or screenshot.".into(),
-            );
+            .map_err(|_| "Response state is unavailable")?
+            .shutting_down
+        {
+            return Err("Harness is shutting down".into());
         }
         let id = core
             .meeting
@@ -550,19 +561,6 @@ fn send_visual(app: &tauri::AppHandle, clipboard: bool) -> Result<(), String> {
             .map_err(|_| "Chat is unavailable")?
             .state()?
             .meeting_id;
-        if let Some(id) = id {
-            if core
-                .store
-                .meeting_pending_request(id)
-                .map_err(|_| "Couldn't read pending request")?
-                .is_some()
-            {
-                return Err(
-                    "Retry or finish the pending response before sending a screenshot or image."
-                        .into(),
-                );
-            }
-        }
         (id, track_work(&core))
     };
     let _work = work;
@@ -572,36 +570,41 @@ fn send_visual(app: &tauri::AppHandle, clipboard: bool) -> Result<(), String> {
             .meeting_id
             .ok_or("Couldn't start chat")?,
     };
-    let generation = {
-        let state = app.state::<Mutex<Core>>();
-        let core = state.lock().map_err(|_| "Chat is unavailable")?;
-        let response = core
-            .response
-            .lock()
-            .map_err(|_| "Response state is unavailable")?;
-        response.generation
-    };
     // Capture before revealing/focusing the assistant, so it cannot obscure the question.
     let (text, image) = if clipboard {
         ("Answer the software interview question in this image. If it contains code, explain or solve the problem; ask for clarification if the question is unclear.".into(), Some(crate::visual::clipboard_image()?))
     } else {
         (crate::visual::screenshot_text()?, None)
     };
-    {
-        let state = app.state::<Mutex<Core>>();
-        let core = state.lock().map_err(|_| "Chat is unavailable")?;
-        let response = core
-            .response
-            .lock()
-            .map_err(|_| "Response state is unavailable")?;
-        if response.generation != generation {
-            return Err(
-                "The chat or response changed during capture. Press the shortcut again.".into(),
-            );
+    let deadline = std::time::Instant::now() + VISUAL_WAIT;
+    let mut waiting = false;
+    loop {
+        match dispatch_response(
+            app,
+            id,
+            Some((text.clone(), image.clone())),
+            false,
+            false,
+            None,
+            false,
+        ) {
+            Err(error) if error == RESPONSE_RUNNING && std::time::Instant::now() < deadline => {
+                if !waiting {
+                    waiting = true;
+                    let _ = app.emit(
+                        "app-notice",
+                        "Captured. Sending after the current response finishes.",
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            result => {
+                result?;
+                break;
+            }
         }
     }
-    dispatch_response(app, id, Some((text, image)), false, false, None)?;
-    report_window_error(show_overlay(app));
+    report_window_error(show_overlay(app, false));
     Ok(())
 }
 
@@ -612,7 +615,13 @@ fn cancel_response(state: tauri::State<'_, Mutex<Core>>) -> Result<(), String> {
         .response
         .lock()
         .map_err(|_| "Response state is unavailable")?;
-    response.auto_paused = true;
+    if response
+        .state
+        .as_ref()
+        .is_some_and(|state| state.speech_through.is_some())
+    {
+        response.auto_paused = true;
+    }
     response.manual_through = None;
     if let Some(cancel) = response.cancel.take() {
         let _ = cancel.send(());
@@ -668,7 +677,8 @@ pub(crate) fn speech_finalized(app: &tauri::AppHandle, meeting_id: i64) {
             return;
         }
         let _ = tauri::async_runtime::spawn_blocking(move || {
-            if let Err(error) = dispatch_response(&app, meeting_id, None, false, true, None) {
+            if let Err(error) = dispatch_response(&app, meeting_id, None, false, true, None, false)
+            {
                 let _ = app.emit("app-notice", error);
             }
         })
@@ -683,6 +693,7 @@ fn dispatch_response(
     include_microphone: bool,
     automatic: bool,
     through_id: Option<i64>,
+    retry: bool,
 ) -> Result<Option<DispatchState>, String> {
     if !cfg!(windows) {
         return Err("Native inference requires Windows credential storage".into());
@@ -709,7 +720,7 @@ fn dispatch_response(
         return if automatic {
             Ok(None)
         } else {
-            Err("A response is already running. Wait or stop it first.".into())
+            Err(RESPONSE_RUNNING.into())
         };
     }
     // Only the current or just-completed meeting can be sent by these controls.
@@ -727,10 +738,37 @@ fn dispatch_response(
     if account.is_none() && !fallbacks.iter().any(|target| target.allow_fallback) {
         return Err("Connect a provider, allow context sharing, and select a model first".into());
     }
-    let existing = core
+    let mut existing = core
         .store
         .meeting_pending_request(meeting_id)
         .map_err(|_| "Couldn't read pending request")?;
+    // A new send replaces a failed request without output. Released speech goes out with the next send.
+    let stale = existing
+        .as_ref()
+        .filter(|pending| {
+            !retry
+                && pending.status == RequestStatus::Pending
+                && (question.is_some() || pending.kind == RequestKind::Question)
+        })
+        .map(|pending| pending.id);
+    if let Some(id) = stale {
+        let unsent = core
+            .store
+            .latest_finalized_id(meeting_id)
+            .map_err(|_| "Couldn't read finalized speech")?
+            > core
+                .store
+                .delivered_speech_through(meeting_id)
+                .map_err(|_| "Couldn't read speech progress")?;
+        if (!automatic || unsent)
+            && core
+                .store
+                .discard_pending_request(id)
+                .map_err(|_| "Couldn't clear the failed request")?
+        {
+            existing = None;
+        }
+    }
     if automatic && existing.is_some() {
         return Ok(None);
     } // Failed requests need an explicit retry.
@@ -978,7 +1016,9 @@ fn dispatch_response(
             .and_then(|state| state.speech_through);
         if !succeeded {
             controller.manual_through = None;
-            if controller.auto_meeting == Some(meeting_id) {
+            if controller.auto_meeting == Some(meeting_id)
+                && pending.kind == RequestKind::Transcript
+            {
                 controller.auto_paused = true;
             }
         }
@@ -1001,7 +1041,9 @@ fn dispatch_response(
         }
         if let Some((id, through)) = manual {
             tauri::async_runtime::spawn_blocking(move || {
-                if let Err(error) = dispatch_response(&app, id, None, false, false, Some(through)) {
+                if let Err(error) =
+                    dispatch_response(&app, id, None, false, false, Some(through), false)
+                {
                     let _ = app.emit("app-notice", error);
                 }
             });
@@ -2641,7 +2683,15 @@ fn shortcuts(settings: &Settings) -> Result<Vec<Shortcut>, String> {
         .map_err(|_| "The screenshot shortcut is invalid. Try Ctrl+Shift+O.".to_string())?;
     let image = Shortcut::from_str(settings.image_shortcut.trim())
         .map_err(|_| "The clipboard image shortcut is invalid. Try Ctrl+Shift+X.".to_string())?;
-    let mut keys = vec![overlay, send, new_chat, screenshot, image];
+    let listen = Shortcut::from_str(settings.listen_shortcut.trim())
+        .map_err(|_| "The listening shortcut is invalid. Try Ctrl+Alt+L.".to_string())?;
+    let earlier = Shortcut::from_str(settings.history_shortcuts[0].trim())
+        .map_err(|_| "The earlier message shortcut is invalid. Try Ctrl+Shift+Up.".to_string())?;
+    let later = Shortcut::from_str(settings.history_shortcuts[1].trim())
+        .map_err(|_| "The later message shortcut is invalid. Try Ctrl+Shift+Down.".to_string())?;
+    let mut keys = vec![
+        overlay, send, new_chat, screenshot, image, listen, earlier, later,
+    ];
     for (name, key) in crate::store::WINDOW_ACTIONS
         .iter()
         .zip(&settings.window_shortcuts)
@@ -2805,13 +2855,13 @@ fn start_chat(app: tauri::AppHandle) -> Result<crate::meeting::MeetingState, Str
     restore_saved_meeting(app, id)
 }
 
-fn nudge_overlay(app: &tauri::AppHandle, action: usize) -> tauri::Result<()> {
+fn nudge_overlay(app: &tauri::AppHandle, action: usize, step: f64) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window("overlay") else {
         return Ok(());
     };
     let scale = window.scale_factor()?;
     let px = |value: f64| (value * scale).round() as i32;
-    let step = px(40.0);
+    let step = px(step);
     let (dx, dy, dw, dh) = [
         (-1, 0, 0, 0),
         (1, 0, 0, 0),
@@ -2847,8 +2897,9 @@ fn nudge_overlay(app: &tauri::AppHandle, action: usize) -> tauri::Result<()> {
     window.set_position(PhysicalPosition::new(x, y))
 }
 
-fn show_overlay(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn show_overlay(app: &tauri::AppHandle, interactive: bool) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("overlay") {
+        window.set_ignore_cursor_events(!interactive)?;
         let position = window.outer_position()?;
         let size = window.outer_size()?;
         let monitors = window.available_monitors()?;
@@ -2883,18 +2934,21 @@ fn show_overlay(app: &tauri::AppHandle) -> tauri::Result<()> {
             );
             window.set_position(PhysicalPosition::new(x, y))?;
         }
+        window.set_focusable(interactive)?;
         window.show()?;
-        window.set_focus()?;
+        if interactive {
+            window.set_focus()?;
+        }
     }
     Ok(())
 }
 
-fn toggle_overlay(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn toggle_overlay(app: &tauri::AppHandle, interactive: bool) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("overlay") {
         if window.is_visible()? {
             window.hide()?;
         } else {
-            show_overlay(app)?;
+            show_overlay(app, interactive)?;
         }
     }
     Ok(())
@@ -2907,6 +2961,85 @@ fn report_window_error(result: tauri::Result<()>) {
 }
 
 static HOTKEY_PREPARATION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+static NUDGE_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn hold_nudge(app: &tauri::AppHandle, action: usize) {
+    use std::sync::atomic::Ordering;
+    let ticket = NUDGE_TICKET.fetch_add(1, Ordering::AcqRel) + 1;
+    report_window_error(nudge_overlay(app, action, 40.0));
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // ponytail: 10 s cap in case a key release is never reported.
+        for _ in 0..600 {
+            if NUDGE_TICKET.load(Ordering::Acquire) != ticket {
+                return;
+            }
+            report_window_error(nudge_overlay(&app, action, 8.0));
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+    });
+}
+
+#[tauri::command]
+fn toggle_listening(app: tauri::AppHandle) -> Result<crate::meeting::MeetingState, String> {
+    let state = app.state::<Mutex<Core>>();
+    let status = state
+        .lock()
+        .map_err(|_| "Meeting state is unavailable")?
+        .meeting
+        .lock()
+        .map_err(|_| "Meeting state is unavailable")?
+        .state()?
+        .status;
+    match status.as_str() {
+        "active" | "starting" => stop_meeting(app.clone(), state),
+        "stopping" => Err("Listening is still stopping. Try again in a moment.".into()),
+        _ => {
+            let automatic = {
+                let core = state.lock().map_err(|_| "Meeting state is unavailable")?;
+                core.settings.send_mode == "automatic" && inference_available(&core)
+            };
+            start_meeting(
+                app.clone(),
+                state,
+                "Meeting".into(),
+                true,
+                None,
+                Some(automatic),
+            )
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Turn {
+    request_id: i64,
+    user_text: String,
+    answer: String,
+}
+
+#[tauri::command]
+fn meeting_turns(
+    state: tauri::State<'_, Mutex<Core>>,
+    meeting_id: i64,
+) -> Result<Vec<Turn>, String> {
+    let turns = state
+        .lock()
+        .map_err(|_| "Messages are unavailable")?
+        .store
+        .meeting_turns(meeting_id)
+        .map_err(|_| "Couldn't read earlier messages")?;
+    Ok(turns
+        .into_iter()
+        .map(|(request_id, user_text, answer)| Turn {
+            request_id,
+            user_text,
+            answer,
+        })
+        .collect())
+}
 
 fn show_fatal(message: &str) {
     #[cfg(windows)]
@@ -2933,7 +3066,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            report_window_error(show_overlay(app))
+            report_window_error(show_overlay(app, true))
         }))
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -2958,7 +3091,8 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    if event.state != ShortcutState::Pressed {
+                    if event.state == ShortcutState::Released {
+                        NUDGE_TICKET.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                         return;
                     }
                     let settings = app
@@ -2974,7 +3108,7 @@ pub fn run() {
                     if let Some(settings) = settings {
                         if let Ok(pair) = shortcuts(&settings) {
                             if shortcut == &pair[2] {
-                                report_window_error(show_overlay(app));
+                                report_window_error(show_overlay(app, false));
                                 let app = app.clone();
                                 tauri::async_runtime::spawn(async move {
                                     if let Err(error) = new_chat(app.clone()).await {
@@ -2982,11 +3116,23 @@ pub fn run() {
                                     }
                                 });
                             } else if shortcut == &pair[0] {
-                                report_window_error(toggle_overlay(app));
+                                report_window_error(toggle_overlay(app, false));
                             } else if let Some(action) =
-                                pair[5..].iter().position(|key| key == shortcut)
+                                pair[8..].iter().position(|key| key == shortcut)
                             {
-                                report_window_error(nudge_overlay(app, action));
+                                hold_nudge(app, action);
+                            } else if shortcut == &pair[5] {
+                                report_window_error(show_overlay(app, false));
+                                let app = app.clone();
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    if let Err(error) = toggle_listening(app.clone()) {
+                                        let _ = app.emit("app-notice", error);
+                                    }
+                                });
+                            } else if shortcut == &pair[6] || shortcut == &pair[7] {
+                                report_window_error(show_overlay(app, false));
+                                let step: i32 = if shortcut == &pair[6] { -1 } else { 1 };
+                                let _ = app.emit("history-step", step);
                             } else if shortcut == &pair[3] || shortcut == &pair[4] {
                                 let permit = match HOTKEY_PREPARATION.try_acquire() {
                                     Ok(permit) => permit,
@@ -3007,7 +3153,7 @@ pub fn run() {
                                     }
                                 });
                             } else if shortcut == &pair[1] {
-                                report_window_error(show_overlay(app));
+                                report_window_error(show_overlay(app, false));
                                 let permit = match HOTKEY_PREPARATION.try_acquire() {
                                     Ok(permit) => permit,
                                     Err(_) => {
@@ -3049,6 +3195,7 @@ pub fn run() {
                                                         false,
                                                         false,
                                                         Some(cutoff),
+                                                        false,
                                                     )
                                                 });
                                             match sent {
@@ -3122,6 +3269,8 @@ pub fn run() {
             start_chat,
             ask_meeting,
             send_meeting_speech,
+            toggle_listening,
+            meeting_turns,
             cancel_response,
             open_external
         ])
@@ -3236,9 +3385,9 @@ pub fn run() {
                             }
                         });
                     }
-                    "open" => report_window_error(show_overlay(app)),
+                    "open" => report_window_error(show_overlay(app, true)),
                     "settings" => {
-                        report_window_error(show_overlay(app));
+                        report_window_error(show_overlay(app, true));
                         let _ = app.emit("open-settings", ());
                     }
                     "quit" => {
@@ -3312,17 +3461,28 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        report_window_error(toggle_overlay(tray.app_handle()));
+                        report_window_error(toggle_overlay(tray.app_handle(), true));
                     }
                 })
                 .build(app)?;
             if !settings.launch_on_login || !std::env::args().any(|arg| arg == "--background") {
-                show_overlay(app.handle())?;
+                show_overlay(app.handle(), true)?;
             }
             log::info!("component=app action=ready");
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "overlay" && matches!(event, WindowEvent::Focused(false)) {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    if let Some(overlay) = app.get_webview_window("overlay") {
+                        if !overlay.is_focused().unwrap_or(true) {
+                            let _ = overlay.set_ignore_cursor_events(true);
+                        }
+                    }
+                });
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "overlay" {
                     api.prevent_close();
