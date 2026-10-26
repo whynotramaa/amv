@@ -2897,9 +2897,9 @@ fn nudge_overlay(app: &tauri::AppHandle, action: usize, step: f64) -> tauri::Res
     window.set_position(PhysicalPosition::new(x, y))
 }
 
-fn show_overlay(app: &tauri::AppHandle, interactive: bool) -> tauri::Result<()> {
+fn show_overlay(app: &tauri::AppHandle, focus: bool) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("overlay") {
-        window.set_ignore_cursor_events(!interactive)?;
+        window.set_ignore_cursor_events(false)?;
         let position = window.outer_position()?;
         let size = window.outer_size()?;
         let monitors = window.available_monitors()?;
@@ -2934,21 +2934,21 @@ fn show_overlay(app: &tauri::AppHandle, interactive: bool) -> tauri::Result<()> 
             );
             window.set_position(PhysicalPosition::new(x, y))?;
         }
-        window.set_focusable(interactive)?;
+        window.set_focusable(true)?;
         window.show()?;
-        if interactive {
+        if focus {
             window.set_focus()?;
         }
     }
     Ok(())
 }
 
-fn toggle_overlay(app: &tauri::AppHandle, interactive: bool) -> tauri::Result<()> {
+fn toggle_overlay(app: &tauri::AppHandle, focus: bool) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("overlay") {
         if window.is_visible()? {
             window.hide()?;
         } else {
-            show_overlay(app, interactive)?;
+            show_overlay(app, focus)?;
         }
     }
     Ok(())
@@ -3472,17 +3472,6 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "overlay" && matches!(event, WindowEvent::Focused(false)) {
-                let app = window.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                    if let Some(overlay) = app.get_webview_window("overlay") {
-                        if !overlay.is_focused().unwrap_or(true) {
-                            let _ = overlay.set_ignore_cursor_events(true);
-                        }
-                    }
-                });
-            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "overlay" {
                     api.prevent_close();
